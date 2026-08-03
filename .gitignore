@@ -1,0 +1,23 @@
+# ── Personal financial data — never commit ────────────────────────────────────
+data/*.db
+data/BankTransactions/*.xml
+data/BankTransactions/*.mt940
+data/BankTransactions/*.940
+data/BankTransactions/*.txt
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+
+# ── Editor ────────────────────────────────────────────────────────────────────
+.env
+.venv/
+venv/
+*.egg-info/
