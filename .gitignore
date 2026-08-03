@@ -1,9 +1,7 @@
 # ── Personal financial data — never commit ────────────────────────────────────
 data/*.db
-data/BankTransactions/*.xml
-data/BankTransactions/*.mt940
-data/BankTransactions/*.940
-data/BankTransactions/*.txt
+data/BankTransactions/
+data/Private information/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

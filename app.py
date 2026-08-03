@@ -1,4 +1,5 @@
 import streamlit as st
+import altair as alt
 from db import init_db, get_yearly_summary, get_expense_by_category
 
 st.set_page_config(
@@ -56,4 +57,14 @@ st.divider()
 cat_df = get_expense_by_category(jaar)
 if not cat_df.empty and cat_df["totaal"].sum() > 0:
     st.subheader("Kosten per categorie (ex BTW)")
-    st.bar_chart(cat_df.set_index("categorie")["totaal"])
+    cat_df = cat_df.sort_values("totaal", ascending=False)
+    bars = alt.Chart(cat_df).mark_bar().encode(
+        x=alt.X("totaal:Q", title="Bedrag (ex BTW)"),
+        y=alt.Y("categorie:N", sort="-x", title=None),
+        tooltip=[alt.Tooltip("categorie:N", title="Categorie"),
+                 alt.Tooltip("totaal:Q", title="Bedrag", format=",.2f")],
+    )
+    labels = bars.mark_text(align="left", dx=4).encode(
+        text=alt.Text("totaal:Q", format=",.0f")
+    )
+    st.altair_chart(bars + labels, use_container_width=True)

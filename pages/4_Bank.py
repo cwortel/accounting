@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 from db import (
-    init_db, import_camt, get_bank_transactions,
+    init_db, import_camt, import_rabobank_csv, get_bank_transactions,
     get_expenses, get_income, link_bank_transaction, unlink_bank_transaction,
     mark_bank_as_prive,
 )
@@ -117,28 +117,38 @@ kw_label = st.sidebar.selectbox("Kwartaal", ["Alle", "Q1", "Q2", "Q3", "Q4"])
 kw_num = None if kw_label == "Alle" else int(kw_label[1])
 only_unmatched = st.sidebar.checkbox("Alleen ongekoppeld", value=False)
 
+# Always filter to business accounts only
+ZAKELIJK_IBANS = ["NL84RABO0188971130", "NL49RABO3161681290"]
+
 # ── Import ─────────────────────────────────────────────────────────────────────
-with st.expander("📂 Importeer CAMT.053 bestanden", expanded=False):
-    files = sorted(BANK_DIR.glob("*.xml")) if BANK_DIR.exists() else []
+with st.expander("📂 Importeer bestanden", expanded=False):
+    xml_files = sorted(BANK_DIR.glob("*.xml")) if BANK_DIR.exists() else []
+    csv_files = sorted(BANK_DIR.glob("*.csv")) if BANK_DIR.exists() else []
+    files = xml_files + csv_files
     if files:
         st.write(f"Gevonden in `{BANK_DIR}`:")
         for f in files:
-            st.code(f.name)
+            st.code(f"{f.name} ({'CAMT' if f.suffix == '.xml' else 'CSV'})")
         if st.button("⬆️ Importeer alle bestanden", type="primary"):
             total = 0
-            for f in files:
+            for f in xml_files:
                 n = import_camt(str(f))
+                total += n
+                st.write(f"  `{f.name}` → {n} nieuwe transacties")
+            for f in csv_files:
+                n = import_rabobank_csv(str(f))
                 total += n
                 st.write(f"  `{f.name}` → {n} nieuwe transacties")
             st.success(f"Totaal {total} transacties geïmporteerd.")
             st.rerun()
     else:
-        st.info(f"Geen XML-bestanden gevonden in `{BANK_DIR}`")
+        st.info(f"Geen bestanden gevonden in `{BANK_DIR}`")
 
 st.divider()
 
 # ── Transaction list ───────────────────────────────────────────────────────────
 df = get_bank_transactions(jaar, kw_num, only_unmatched)
+df = df[df["rekening"].isin(ZAKELIJK_IBANS)] if not df.empty else df
 
 if df.empty:
     st.info("Geen transacties gevonden. Importeer eerst een CAMT.053 bestand.")
