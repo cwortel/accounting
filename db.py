@@ -68,8 +68,14 @@ def init_db() -> None:
 
 def get_categories() -> list:
     with get_connection() as conn:
-        rows = conn.execute("SELECT naam FROM categories ORDER BY naam").fetchall()
-    return [r["naam"] for r in rows]
+        # Include both managed categories and any category already used in expenses
+        rows = conn.execute("""
+            SELECT naam FROM categories
+            UNION
+            SELECT DISTINCT categorie FROM expenses WHERE categorie != ''
+            ORDER BY naam
+        """).fetchall()
+    return [r[0] for r in rows]
 
 
 def _to_date(val):
@@ -268,6 +274,28 @@ def get_expense_by_category(jaar: int) -> pd.DataFrame:
         )
 
 
+def get_expense_by_category_quarter(jaar: int) -> pd.DataFrame:
+    """Return expenses pivoted: rows=category, columns=Q1-Q4+Totaal."""
+    with get_connection() as conn:
+        df = pd.read_sql_query(
+            "SELECT categorie, kwartaal, SUM(ex_btw) as totaal FROM expenses "
+            "WHERE jaar=? GROUP BY categorie, kwartaal",
+            conn, params=[jaar],
+        )
+    if df.empty:
+        return pd.DataFrame(columns=["Categorie", "Q1", "Q2", "Q3", "Q4", "Totaal"])
+    pivot = df.pivot_table(index="categorie", columns="kwartaal", values="totaal", fill_value=0.0)
+    pivot.columns = [f"Q{int(c)}" for c in pivot.columns]
+    for q in ["Q1", "Q2", "Q3", "Q4"]:
+        if q not in pivot.columns:
+            pivot[q] = 0.0
+    pivot = pivot[["Q1", "Q2", "Q3", "Q4"]].copy()
+    pivot["Totaal"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("Totaal", ascending=False).reset_index()
+    pivot = pivot.rename(columns={"categorie": "Categorie"})
+    return pivot
+
+
 # ── Bank transactions ─────────────────────────────────────────────────────────
 
 def _init_bank_table(conn: sqlite3.Connection) -> None:
@@ -292,7 +320,10 @@ def _init_bank_table(conn: sqlite3.Connection) -> None:
             code               TEXT    NOT NULL DEFAULT '',
             machtigingskenmerk TEXT    NOT NULL DEFAULT '',
             incassant_id       TEXT    NOT NULL DEFAULT '',
-            prive_categorie    TEXT    NOT NULL DEFAULT ''
+            prive_categorie    TEXT    NOT NULL DEFAULT '',
+            is_recurring       INTEGER NOT NULL DEFAULT 0,
+            intern             INTEGER NOT NULL DEFAULT 0,
+            intern_omschrijving TEXT   NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS rekeningen (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,6 +344,9 @@ def _init_bank_table(conn: sqlite3.Connection) -> None:
         ("machtigingskenmerk", "TEXT NOT NULL DEFAULT ''"),
         ("incassant_id",       "TEXT NOT NULL DEFAULT ''"),
         ("prive_categorie",    "TEXT NOT NULL DEFAULT ''"),
+        ("is_recurring",       "INTEGER NOT NULL DEFAULT 0"),
+        ("intern",             "INTEGER NOT NULL DEFAULT 0"),
+        ("intern_omschrijving","TEXT NOT NULL DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE bank_transactions ADD COLUMN {col} {definition}")
@@ -622,7 +656,7 @@ def get_bank_transactions(jaar: int, kwartaal: int = None,
         sql += " AND kwartaal=?"
         params.append(kwartaal)
     if only_unmatched:
-        sql += " AND expense_id IS NULL AND income_id IS NULL AND prive=0"
+        sql += " AND expense_id IS NULL AND income_id IS NULL AND prive=0 AND intern=0"
     if rekening:
         sql += " AND rekening=?"
         params.append(rekening)
@@ -647,7 +681,16 @@ def link_bank_transaction(tx_id: int, expense_id: int = None, income_id: int = N
 def mark_bank_as_prive(tx_id: int, omschrijving: str = "") -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE bank_transactions SET prive=1, prive_omschrijving=?, expense_id=NULL, income_id=NULL, fooi=0 WHERE id=?",
+            "UPDATE bank_transactions SET prive=1, prive_omschrijving=?, expense_id=NULL, income_id=NULL, fooi=0, intern=0, intern_omschrijving='' WHERE id=?",
+            (omschrijving.strip(), tx_id),
+        )
+        conn.commit()
+
+
+def mark_bank_as_intern(tx_id: int, omschrijving: str = "") -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE bank_transactions SET intern=1, intern_omschrijving=?, expense_id=NULL, income_id=NULL, fooi=0, prive=0, prive_omschrijving='' WHERE id=?",
             (omschrijving.strip(), tx_id),
         )
         conn.commit()
@@ -656,7 +699,8 @@ def mark_bank_as_prive(tx_id: int, omschrijving: str = "") -> None:
 def unlink_bank_transaction(tx_id: int) -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE bank_transactions SET expense_id=NULL, income_id=NULL, fooi=0, prive=0, prive_omschrijving='' WHERE id=?",
+            "UPDATE bank_transactions SET expense_id=NULL, income_id=NULL, fooi=0, "
+            "prive=0, prive_omschrijving='', intern=0, intern_omschrijving='' WHERE id=?",
             (tx_id,),
         )
         conn.commit()
@@ -671,21 +715,32 @@ def set_prive_categorie(tx_id: int, categorie: str) -> None:
         conn.commit()
 
 
+def set_prive_recurring(tx_id: int, is_recurring: bool) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE bank_transactions SET is_recurring=? WHERE id=?",
+            (int(is_recurring), tx_id),
+        )
+        conn.commit()
+
+
 def set_prive_categorie_by_naam(naam: str, categorie: str) -> int:
-    """Apply categorie to all uncategorised transactions with the same naam. Returns count updated."""
+    """Apply categorie to all transactions with the same naam. Returns count updated."""
     with get_connection() as conn:
         cur = conn.execute(
-            "UPDATE bank_transactions SET prive_categorie=? "
-            "WHERE naam=? AND (prive_categorie IS NULL OR prive_categorie='')",
+            "UPDATE bank_transactions SET prive_categorie=? WHERE naam=?",
             (categorie.strip(), naam),
         )
         conn.commit()
         return cur.rowcount
 
 
-def get_prive_spending(jaar: int, maand: int = None, rekening: str = None) -> pd.DataFrame:
-    sql = "SELECT * FROM bank_transactions WHERE jaar=? AND bedrag < 0"
+def get_prive_spending(jaar: int, maand: int = None, rekening: str = None,
+                       only_costs: bool = True) -> pd.DataFrame:
+    sql = "SELECT * FROM bank_transactions WHERE jaar=?"
     params: list = [jaar]
+    if only_costs:
+        sql += " AND bedrag < 0"
     if maand:
         sql += " AND CAST(strftime('%m', datum) AS INTEGER)=?"
         params.append(maand)
@@ -700,6 +755,22 @@ def get_prive_spending(jaar: int, maand: int = None, rekening: str = None) -> pd
         df = pd.read_sql_query(sql, conn, params=params)
     if not df.empty:
         df["datum"] = df["datum"].apply(_to_date)
+    return df
+
+
+def get_prive_spending_by_category(jaar: int, maand: int) -> pd.DataFrame:
+    """Return spending totals per category for a specific month (for Privé Overzicht)."""
+    with get_connection() as conn:
+        _init_bank_table(conn)
+        df = pd.read_sql_query(
+            "SELECT prive_categorie, SUM(ABS(bedrag)) as totaal, COUNT(*) as n "
+            "FROM bank_transactions "
+            "WHERE jaar=? AND CAST(strftime('%m', datum) AS INTEGER)=? "
+            "  AND bedrag < 0 "
+            "  AND rekening IN (SELECT iban FROM rekeningen WHERE type='prive') "
+            "GROUP BY prive_categorie ORDER BY totaal DESC",
+            conn, params=[jaar, maand],
+        )
     return df
 
 

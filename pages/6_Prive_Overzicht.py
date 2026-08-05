@@ -3,7 +3,7 @@ import pandas as pd
 from db import (
     init_db, get_schulden, get_vaste_lasten,
     get_prive_inkomsten, save_prive_inkomsten,
-    monthly_equivalent,
+    monthly_equivalent, get_prive_spending_by_category,
 )
 
 st.set_page_config(page_title="Privé Overzicht", page_icon="🏠", layout="wide")
@@ -148,29 +148,50 @@ st.divider()
 
 st.subheader(f"Saldo — {maand_label} {jaar}")
 
-totaal_kosten = maandelijks_vaste + maandelijks_schulden
-netto = totaal_inkomsten - totaal_kosten
+totaal_kosten_geschat = maandelijks_vaste + maandelijks_schulden
+netto_geschat = totaal_inkomsten - totaal_kosten_geschat
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Inkomsten", f"€ {totaal_inkomsten:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-c2.metric("Vaste lasten p/m", f"€ {maandelijks_vaste:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-c3.metric("Schuld termijnen p/m", f"€ {maandelijks_schulden:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-c4.metric(
-    "Netto beschikbaar",
-    f"€ {netto:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-    delta=f"{'positief' if netto >= 0 else 'tekort'}",
-    delta_color="normal" if netto >= 0 else "inverse",
-)
+# Pull actual spending from bank transactions for this month
+spend_df = get_prive_spending_by_category(jaar, maand)
+totaal_werkelijk = spend_df["totaal"].sum() if not spend_df.empty else 0.0
+netto_werkelijk = totaal_inkomsten - totaal_werkelijk
 
-# ── Breakdown bar ─────────────────────────────────────────────────────────────
+fmt = lambda x: f"€ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-if totaal_inkomsten > 0:
-    breakdown = pd.DataFrame({
-        "Post": ["Vaste lasten", "Schuld termijnen", "Beschikbaar"],
-        "Bedrag": [
-            maandelijks_vaste,
-            maandelijks_schulden,
-            max(0.0, netto),
-        ],
-    }).set_index("Post")
-    st.bar_chart(breakdown)
+c1, c2, c3 = st.columns(3)
+with c1:
+    with st.container(border=True):
+        st.caption("Geschat (vaste lasten + schulden)")
+        st.metric("Kosten p/m", fmt(totaal_kosten_geschat))
+        st.metric("Netto", fmt(netto_geschat),
+                  delta="positief" if netto_geschat >= 0 else "tekort",
+                  delta_color="normal" if netto_geschat >= 0 else "inverse")
+with c2:
+    with st.container(border=True):
+        st.caption("Werkelijk (bank transacties)")
+        st.metric("Kosten", fmt(totaal_werkelijk))
+        st.metric("Netto", fmt(netto_werkelijk),
+                  delta="positief" if netto_werkelijk >= 0 else "tekort",
+                  delta_color="normal" if netto_werkelijk >= 0 else "inverse")
+with c3:
+    with st.container(border=True):
+        st.caption("Inkomsten")
+        st.metric("Deze maand", fmt(totaal_inkomsten))
+
+if not spend_df.empty:
+    st.divider()
+    st.subheader("Werkelijke uitgaven per categorie")
+    import altair as alt
+    spend_disp = spend_df.copy()
+    spend_disp["prive_categorie"] = spend_disp["prive_categorie"].replace("", "Ongecategoriseerd")
+    bars = alt.Chart(spend_disp).mark_bar().encode(
+        x=alt.X("totaal:Q", title="Bedrag"),
+        y=alt.Y("prive_categorie:N", sort="-x", title=None),
+        tooltip=[alt.Tooltip("prive_categorie:N", title="Categorie"),
+                 alt.Tooltip("totaal:Q", format=",.2f", title="Bedrag"),
+                 alt.Tooltip("n:Q", title="Transacties")],
+    )
+    labels = bars.mark_text(align="left", dx=4).encode(
+        text=alt.Text("totaal:Q", format=",.0f")
+    )
+    st.altair_chart(bars + labels, use_container_width=True)

@@ -4,7 +4,7 @@ from pathlib import Path
 from db import (
     init_db, import_camt, import_rabobank_csv, get_bank_transactions,
     get_expenses, get_income, link_bank_transaction, unlink_bank_transaction,
-    mark_bank_as_prive,
+    mark_bank_as_prive, mark_bank_as_intern,
 )
 
 st.set_page_config(page_title="Bank", page_icon="🏦", layout="wide")
@@ -156,14 +156,17 @@ if df.empty:
 
 matched = df["expense_id"].notna() | df["income_id"].notna()
 is_prive = df.get("prive", pd.Series(0, index=df.index)).astype(bool)
+is_intern = df.get("intern", pd.Series(0, index=df.index)).astype(bool)
 n_matched = matched.sum()
 n_prive = is_prive.sum()
+n_intern = is_intern.sum()
 n_total = len(df)
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Transacties", n_total)
 c2.metric("Gekoppeld", int(n_matched))
 c3.metric("Privé onttrekking", int(n_prive))
-c4.metric("Ongekoppeld", int(n_total - n_matched - n_prive))
+c4.metric("Intern", int(n_intern))
+c5.metric("Ongekoppeld", int(n_total - n_matched - n_prive - n_intern))
 
 st.divider()
 
@@ -176,10 +179,13 @@ for _, tx in df.iterrows():
     tx_id = int(tx["id"])
     is_matched = pd.notna(tx.get("expense_id")) or pd.notna(tx.get("income_id"))
     is_prive_tx = bool(tx.get("prive"))
+    is_intern_tx = bool(tx.get("intern"))
     bedrag = tx["bedrag"]
     bedrag_str = f"€ {bedrag:+,.2f}"
 
-    if is_prive_tx:
+    if is_intern_tx:
+        col_status = "🔄"
+    elif is_prive_tx:
         col_status = "🟡"
     elif is_matched:
         col_status = "🟢"
@@ -188,7 +194,9 @@ for _, tx in df.iterrows():
     else:
         col_status = "🔵"
     label = f"{col_status} {tx['datum']}  {bedrag_str}  —  {tx['naam']}"
-    if is_prive_tx and tx.get("prive_omschrijving"):
+    if is_intern_tx and tx.get("intern_omschrijving"):
+        label += f"  *(intern: {tx['intern_omschrijving']})*"
+    elif is_prive_tx and tx.get("prive_omschrijving"):
         label += f"  *(privé: {tx['prive_omschrijving']})*"
     elif tx.get("fooi") and tx["fooi"] != 0:
         label += f"  *(fooi: € {tx['fooi']:.2f})*"
@@ -204,7 +212,13 @@ for _, tx in df.iterrows():
                 st.markdown(f"**Fooi/privé:** € {tx['fooi']:.2f}")
 
         with c2:
-            if is_prive_tx:
+            if is_intern_tx:
+                omschr = tx.get("intern_omschrijving") or ""
+                st.info(f"🔄 Interne overboeking: **{omschr or '—'}**")
+                if st.button("🔓 Ontkoppelen", key=f"unlink_{tx_id}"):
+                    unlink_bank_transaction(tx_id)
+                    st.rerun()
+            elif is_prive_tx:
                 omschr = tx.get("prive_omschrijving") or ""
                 st.warning(f"\U0001f7e1 Priv\u00e9 onttrekking: **{omschr or '\u2014'}**")
                 if st.button("\U0001f513 Ontkoppelen", key=f"unlink_{tx_id}"):
@@ -227,14 +241,27 @@ for _, tx in df.iterrows():
             else:
                 # Matching form
                 st.markdown("**Koppel aan:**")
+                # Default to Inkomst for credits, Uitgave for debits
+                default_type = "Inkomst" if bedrag > 0 else "Uitgave"
                 match_type = st.radio(
                     "Type",
-                    ["Uitgave", "Inkomst", "Privé onttrekking"],
+                    ["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"],
+                    index=["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"].index(default_type),
                     key=f"type_{tx_id}",
                     horizontal=True,
                 )
 
-                if match_type == "Privé onttrekking":
+                if match_type == "Interne overboeking":
+                    omschr = st.text_input(
+                        "Omschrijving (optioneel)",
+                        value="Overboeking naar spaarrekening" if bedrag < 0 else "Overboeking van spaarrekening",
+                        key=f"intern_omschr_{tx_id}",
+                    )
+                    if st.button("🔄 Markeer als Intern", key=f"intern_{tx_id}", type="primary"):
+                        mark_bank_as_intern(tx_id, omschr)
+                        st.rerun()
+
+                elif match_type == "Privé onttrekking":
                     omschr = st.text_input(
                         "Omschrijving (optioneel)",
                         value="Privé onttrekking" if bedrag < 0 else "Privé storting",
@@ -329,3 +356,32 @@ for _, tx in df.iterrows():
                             st.rerun()
                 else:
                     st.info("Geen uitgaven/inkomsten beschikbaar voor dit jaar.")
+
+# ── Ongeboekt overzicht ───────────────────────────────────────────────────────
+
+all_df_full = get_bank_transactions(jaar, kw_num)
+all_df_full = all_df_full[all_df_full["rekening"].isin(ZAKELIJK_IBANS)] if not all_df_full.empty else all_df_full
+
+if not all_df_full.empty:
+    ongeboekt = all_df_full[
+        all_df_full["expense_id"].isna() &
+        all_df_full["income_id"].isna() &
+        (all_df_full.get("prive", 0) == 0) &
+        (all_df_full.get("intern", 0) == 0)
+    ]
+    if not ongeboekt.empty:
+        st.divider()
+        with st.expander(f"⚠️ Ongeboekt / Niet geïdentificeerd  ({len(ongeboekt)} transacties)", expanded=False):
+            st.caption("Transacties zonder koppeling aan uitgave, inkomst, privé of intern.")
+            st.dataframe(
+                ongeboekt[["datum", "naam", "bedrag", "referentie", "rekening"]].rename(columns={
+                    "datum": "Datum", "naam": "Naam", "bedrag": "Bedrag",
+                    "referentie": "Omschrijving", "rekening": "Rekening",
+                }),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Datum":  st.column_config.DateColumn(format="DD-MM-YYYY"),
+                    "Bedrag": st.column_config.NumberColumn(format="€ %.2f"),
+                },
+            )
