@@ -170,9 +170,11 @@ c5.metric("Ongekoppeld", int(n_total - n_matched - n_prive - n_intern))
 
 st.divider()
 
-# Load expenses and income once for matching suggestions
-all_exp = get_expenses(jaar)
-all_inc = get_income(jaar)
+# Load expenses and income from current year + adjacent years so cross-year payments can be matched
+all_exp = pd.concat([get_expenses(jaar - 1), get_expenses(jaar), get_expenses(jaar + 1)], ignore_index=True)
+all_inc = pd.concat([get_income(jaar - 1),   get_income(jaar),   get_income(jaar + 1)],   ignore_index=True)
+all_exp = all_exp.dropna(subset=["id"])
+all_inc = all_inc.dropna(subset=["id"])
 
 # ── Per-transaction rows ───────────────────────────────────────────────────────
 for _, tx in df.iterrows():

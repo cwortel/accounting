@@ -22,6 +22,27 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _repair_orphaned_links(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE bank_transactions
+        SET expense_id=NULL, income_id=NULL, fooi=0,
+            prive=0, prive_omschrijving='', intern=0, intern_omschrijving=''
+        WHERE expense_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.id = bank_transactions.expense_id)
+        """
+    )
+    conn.execute(
+        """
+        UPDATE bank_transactions
+        SET expense_id=NULL, income_id=NULL, fooi=0,
+            prive=0, prive_omschrijving='', intern=0, intern_omschrijving=''
+        WHERE income_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM income i WHERE i.id = bank_transactions.income_id)
+        """
+    )
+
+
 def init_db() -> None:
     with get_connection() as conn:
         conn.executescript("""
@@ -63,6 +84,7 @@ def init_db() -> None:
         conn.commit()
     with get_connection() as conn:
         _init_prive_tables(conn)
+        _repair_orphaned_links(conn)
         conn.commit()
 
 
@@ -160,9 +182,21 @@ def get_expenses(jaar: int, kwartaal: int = None) -> pd.DataFrame:
 def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
     with get_connection() as conn:
         if kwartaal:
-            conn.execute("DELETE FROM expenses WHERE jaar=? AND kwartaal=?", (jaar, kwartaal))
+            scope_where = "jaar=? AND kwartaal=?"
+            scope_params = (jaar, kwartaal)
         else:
-            conn.execute("DELETE FROM expenses WHERE jaar=?", (jaar,))
+            scope_where = "jaar=?"
+            scope_params = (jaar,)
+
+        existing_ids = {
+            int(r[0])
+            for r in conn.execute(
+                f"SELECT id FROM expenses WHERE {scope_where}",
+                scope_params,
+            ).fetchall()
+        }
+        seen_ids: set[int] = set()
+
         for _, row in df.iterrows():
             naam = str(row.get("naam") or "").strip()
             factuur = str(row.get("factuur") or "").strip()
@@ -174,19 +208,40 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
             ex_btw = round(total / (1 + btw_pct / 100), 2) if btw_pct > 0 else total
             btw = round(total - ex_btw, 2)
             row_q = _safe_int(row.get("kwartaal"), kwartaal or 1)
-            conn.execute(
-                "INSERT INTO expenses "
-                "(factuur,naam,datum,categorie,btw_pct,btw,ex_btw,total,afgerekend,jaar,kwartaal) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    factuur, naam,
-                    _date_str(row.get("datum")),
-                    str(row.get("categorie") or ""),
-                    btw_pct, btw, ex_btw, total,
-                    _safe_bool(row.get("afgerekend")),
-                    jaar, row_q,
-                ),
+            row_id = _safe_int(row.get("id"), 0)
+            vals = (
+                factuur,
+                naam,
+                _date_str(row.get("datum")),
+                str(row.get("categorie") or ""),
+                btw_pct,
+                btw,
+                ex_btw,
+                total,
+                _safe_bool(row.get("afgerekend")),
+                jaar,
+                row_q,
             )
+            if row_id and row_id in existing_ids:
+                conn.execute(
+                    "UPDATE expenses SET factuur=?, naam=?, datum=?, categorie=?, "
+                    "btw_pct=?, btw=?, ex_btw=?, total=?, afgerekend=?, jaar=?, kwartaal=? "
+                    "WHERE id=?",
+                    vals + (row_id,),
+                )
+                seen_ids.add(row_id)
+            else:
+                cur = conn.execute(
+                    "INSERT INTO expenses "
+                    "(factuur,naam,datum,categorie,btw_pct,btw,ex_btw,total,afgerekend,jaar,kwartaal) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    vals,
+                )
+                seen_ids.add(int(cur.lastrowid))
+
+        for old_id in existing_ids - seen_ids:
+            conn.execute("UPDATE bank_transactions SET expense_id=NULL, income_id=NULL, fooi=0, prive=0, prive_omschrijving='', intern=0, intern_omschrijving='' WHERE expense_id=?", (old_id,))
+            conn.execute("DELETE FROM expenses WHERE id=?", (old_id,))
         conn.commit()
 
 
@@ -215,9 +270,21 @@ def get_income(jaar: int, kwartaal: int = None) -> pd.DataFrame:
 def save_income(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
     with get_connection() as conn:
         if kwartaal:
-            conn.execute("DELETE FROM income WHERE jaar=? AND kwartaal=?", (jaar, kwartaal))
+            scope_where = "jaar=? AND kwartaal=?"
+            scope_params = (jaar, kwartaal)
         else:
-            conn.execute("DELETE FROM income WHERE jaar=?", (jaar,))
+            scope_where = "jaar=?"
+            scope_params = (jaar,)
+
+        existing_ids = {
+            int(r[0])
+            for r in conn.execute(
+                f"SELECT id FROM income WHERE {scope_where}",
+                scope_params,
+            ).fetchall()
+        }
+        seen_ids: set[int] = set()
+
         for _, row in df.iterrows():
             naam = str(row.get("naam") or "").strip()
             factuur = str(row.get("factuur") or "").strip()
@@ -225,22 +292,50 @@ def save_income(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
                 continue
             ex_btw = round(_safe_float(row.get("ex_btw")), 2)
             btw_pct = _safe_int(row.get("btw_pct"), 21)
-            btw = round(ex_btw * btw_pct / 100, 2)
-            total = round(ex_btw + btw, 2)
+            # Use total as primary if provided; fall back to ex_btw-first
+            total_raw = _safe_float(row.get("total"), -1)
+            if total_raw >= 0:
+                total = round(total_raw, 2)
+                ex_btw = round(total / (1 + btw_pct / 100), 2) if btw_pct > 0 else total
+                btw = round(total - ex_btw, 2)
+            else:
+                btw = round(ex_btw * btw_pct / 100, 2)
+                total = round(ex_btw + btw, 2)
             row_q = _safe_int(row.get("kwartaal"), kwartaal or 1)
-            conn.execute(
-                "INSERT INTO income "
-                "(factuur,naam,datum,project,btw_pct,btw,ex_btw,total,betaald,jaar,kwartaal) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    factuur, naam,
-                    _date_str(row.get("datum")),
-                    str(row.get("project") or ""),
-                    btw_pct, btw, ex_btw, total,
-                    _safe_bool(row.get("betaald")),
-                    jaar, row_q,
-                ),
+            row_id = _safe_int(row.get("id"), 0)
+            vals = (
+                factuur,
+                naam,
+                _date_str(row.get("datum")),
+                str(row.get("project") or ""),
+                btw_pct,
+                btw,
+                ex_btw,
+                total,
+                _safe_bool(row.get("betaald")),
+                jaar,
+                row_q,
             )
+            if row_id and row_id in existing_ids:
+                conn.execute(
+                    "UPDATE income SET factuur=?, naam=?, datum=?, project=?, "
+                    "btw_pct=?, btw=?, ex_btw=?, total=?, betaald=?, jaar=?, kwartaal=? "
+                    "WHERE id=?",
+                    vals + (row_id,),
+                )
+                seen_ids.add(row_id)
+            else:
+                cur = conn.execute(
+                    "INSERT INTO income "
+                    "(factuur,naam,datum,project,btw_pct,btw,ex_btw,total,betaald,jaar,kwartaal) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    vals,
+                )
+                seen_ids.add(int(cur.lastrowid))
+
+        for old_id in existing_ids - seen_ids:
+            conn.execute("UPDATE bank_transactions SET expense_id=NULL, income_id=NULL, fooi=0, prive=0, prive_omschrijving='', intern=0, intern_omschrijving='' WHERE income_id=?", (old_id,))
+            conn.execute("DELETE FROM income WHERE id=?", (old_id,))
         conn.commit()
 
 
@@ -787,6 +882,71 @@ def get_btw_by_quarter(jaar: int):
             conn, params=[jaar],
         )
     return inc, exp
+
+
+def get_matched_income_ids(jaar: int) -> set:
+    with get_connection() as conn:
+        _init_bank_table(conn)
+        rows = conn.execute(
+            "SELECT DISTINCT bt.income_id "
+            "FROM bank_transactions bt "
+            "JOIN income i ON i.id = bt.income_id "
+            "WHERE bt.income_id IS NOT NULL AND i.jaar=?",
+            (jaar,)
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def get_matched_expense_ids(jaar: int) -> set:
+    with get_connection() as conn:
+        _init_bank_table(conn)
+        rows = conn.execute(
+            "SELECT DISTINCT bt.expense_id "
+            "FROM bank_transactions bt "
+            "JOIN expenses e ON e.id = bt.expense_id "
+            "WHERE bt.expense_id IS NOT NULL AND e.jaar=?",
+            (jaar,)
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def get_bank_info_for_expenses(expense_ids: list) -> dict:
+    """Return latest matched bank info per expense_id."""
+    if not expense_ids:
+        return {}
+    with get_connection() as conn:
+        _init_bank_table(conn)
+        cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(bank_transactions)").fetchall()
+        }
+        if "tegen_rekening" in cols:
+            iban_expr = "tegen_rekening"
+        elif "iban" in cols:
+            iban_expr = "iban"
+        else:
+            iban_expr = "''"
+        placeholders = ','.join('?' * len(expense_ids))
+        rows = conn.execute(
+            f"SELECT expense_id, datum, bedrag, naam, {iban_expr}, rekening, id "
+            f"FROM bank_transactions "
+            f"WHERE expense_id IN ({placeholders}) "
+            f"ORDER BY id DESC",
+            expense_ids,
+        ).fetchall()
+    by_expense: dict = {}
+    for r in rows:
+        expense_id = int(r[0])
+        if expense_id in by_expense:
+            continue
+        by_expense[expense_id] = {
+            "datum": r[1],
+            "bedrag": float(r[2] or 0),
+            "naam": r[3],
+            "iban": r[4] or r[5] or "",
+            "tx_id": int(r[6]),
+        }
+    return by_expense
 
 
 # ── Privé: schulden, vaste lasten, inkomsten ──────────────────────────────────
