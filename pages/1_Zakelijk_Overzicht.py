@@ -159,15 +159,10 @@ exp_display_full = _precompute_btw(exp_display_full)
 # Default sort by factuurnummer
 if not exp_display_full.empty:
     exp_display_full = exp_display_full.sort_values("factuur", kind="stable").reset_index(drop=True)
-    if "id" in exp_df.columns:
-        exp_df = exp_df.sort_values("factuur", kind="stable").reset_index(drop=True)
 
-exp_display_full["bankboeking"] = ""
-if "id" in exp_df.columns and not exp_display_full.empty:
-    expense_ids = exp_df["id"].reset_index(drop=True)
-    exp_display_full["bankboeking"] = expense_ids.apply(
-        lambda eid: _format_bankboeking(bank_info_by_expense_id.get(int(eid))) if pd.notna(eid) else ""
-    )
+exp_display_full["bankboeking"] = exp_display_full["id"].apply(
+    lambda eid: _format_bankboeking(bank_info_by_expense_id.get(int(eid))) if pd.notna(eid) else ""
+)
 
 col_fn, col_fc, col_fs = st.columns([2, 2, 1])
 filter_naam = col_fn.text_input("Filter op naam", key="exp_naam_filter", placeholder="Type om te filteren…")
