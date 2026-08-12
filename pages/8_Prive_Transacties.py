@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+from dateutil.relativedelta import relativedelta
 from db import (
     init_db, get_prive_spending,
     set_prive_categorie, set_prive_categorie_by_naam, set_prive_recurring,
     set_prive_recurring_by_naam,
-    get_rekeningen,
+    get_rekeningen, get_schulden, save_schulden, FREQUENTIES,
 )
 
 st.set_page_config(page_title="Privé Transacties", page_icon="🏠", layout="wide")
@@ -56,11 +57,13 @@ for _, r in prive_rek.iterrows():
     rek_options[r["naam"]] = r["iban"]
 rek_label = st.sidebar.selectbox("Rekening", list(rek_options.keys()))
 rekening_filter = rek_options[rek_label]
+toon_inactief_schulden = st.sidebar.checkbox("Toon afgeloste schulden", value=False)
 
 # ── Load all transactions (in + out) ─────────────────────────────────────────
 
 all_df = get_prive_spending(jaar, maand, rekening_filter, only_costs=False)
 all_df_year = get_prive_spending(jaar, None, rekening_filter, only_costs=False)
+schulden_df = get_schulden(only_actief=not toon_inactief_schulden)
 
 if all_df.empty:
     st.info("Geen transacties gevonden.")
@@ -94,7 +97,10 @@ else:
 
 fmt = lambda x: f"€ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-c1, c2, c3, c4, c5 = st.columns(5)
+totaal_schuld_restant = schulden_df[schulden_df["actief"]]["huidig_restant"].apply(lambda x: float(x or 0)).sum() if not schulden_df.empty else 0.0
+maandelijkse_schuld_termijnen = schulden_df[schulden_df["actief"]]["termijn_bedrag"].apply(lambda x: float(x or 0)).sum() if not schulden_df.empty else 0.0
+
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 c1.metric("💰 Inkomsten", fmt(totaal_in))
 c2.metric("💸 Uitgaven", fmt(totaal_uit))
 c3.metric("📊 Netto", fmt(netto),
@@ -103,8 +109,65 @@ c3.metric("📊 Netto", fmt(netto),
 c4.metric("🔄 Vaste lasten", fmt(recurring_totaal))
 c5.metric("📆 Gem. vaste lasten p/m", fmt(recurring_avg_month),
           help="Gemiddelde over maanden met beschikbare terugkerende kosten in de gekozen jaar/rekening selectie.")
+c6.metric("🏦 Schuld restant", fmt(totaal_schuld_restant))
+c7.metric("📅 Schuld termijnen p/m", fmt(maandelijkse_schuld_termijnen))
 
 st.divider()
+
+# ── Werkelijke uitgaven per categorie (filter-aware) ─────────────────────────
+
+cat_df = (
+    df_out[df_out["prive_categorie"].fillna("") != ""]
+    .groupby("prive_categorie")["bedrag"].sum().abs()
+    .reset_index()
+    .rename(columns={"prive_categorie": "categorie", "bedrag": "totaal"})
+)
+
+# Split recurring costs into highlighted aggregates.
+leningen_totaal = float(
+    recurring_filtered[
+        recurring_filtered["prive_categorie"].fillna("").str.lower().isin(["lening", "leningen"])
+    ]["bedrag"].abs().sum()
+)
+other_vaste_lasten_totaal = max(0.0, float(recurring_totaal) - leningen_totaal)
+
+special_rows = pd.DataFrame([
+    {"categorie": "Vaste lasten", "totaal": float(recurring_totaal), "special_group": "Vaste lasten"},
+    {"categorie": "Leningen", "totaal": leningen_totaal, "special_group": "Leningen"},
+    {"categorie": "Overig vaste lasten", "totaal": other_vaste_lasten_totaal, "special_group": "Overig vaste lasten"},
+])
+
+# Avoid duplicate visual meaning by removing direct lening category bar from base categories.
+cat_df = cat_df[~cat_df["categorie"].str.lower().isin(["lening", "leningen"])]
+cat_df["special_group"] = ""
+
+chart_df = pd.concat([cat_df, special_rows], ignore_index=True)
+chart_df = chart_df.groupby("categorie", as_index=False)["totaal"].sum()
+chart_df = chart_df[chart_df["totaal"] > 0].sort_values("totaal", ascending=False)
+category_order = chart_df["categorie"].tolist()
+
+special_lookup = {
+    "Vaste lasten": "Vaste lasten",
+    "Leningen": "Leningen",
+    "Overig vaste lasten": "Overig vaste lasten",
+}
+chart_df["special_group"] = chart_df["categorie"].map(special_lookup).fillna("")
+
+if not chart_df.empty:
+    st.caption("Werkelijke uitgaven per categorie")
+    color_scale = alt.Scale(
+        domain=["Vaste lasten", "Leningen", "Overig vaste lasten", ""],
+        range=["#1D4ED8", "#DC2626", "#0F766E", "#9CA3AF"],
+    )
+    bars = alt.Chart(chart_df).mark_bar().encode(
+        x=alt.X("totaal:Q", title="Bedrag"),
+        y=alt.Y("categorie:N", sort=category_order, title=None),
+        color=alt.Color("special_group:N", scale=color_scale, legend=None),
+        tooltip=[alt.Tooltip("categorie:N"), alt.Tooltip("totaal:Q", format=",.2f")],
+    )
+    labels = bars.mark_text(align="left", dx=4).encode(text=alt.Text("totaal:Q", format=",.0f"))
+    st.altair_chart(bars + labels, use_container_width=True)
+    st.divider()
 
 # ── Callback for category change ──────────────────────────────────────────────
 
@@ -125,6 +188,39 @@ def _on_rec_change(tx_id: int, naam: str) -> None:
     n = set_prive_recurring_by_naam(naam, new_rec)
     if n > 1:
         st.toast(f"{n} transacties van '{naam}' {'gemarkeerd als vast' if new_rec else 'niet meer vast'}", icon="🔄")
+
+
+def _apply_diff(orig_df: pd.DataFrame, diff: dict, drop_cols: list) -> pd.DataFrame:
+    """Reconstruct full edited DataFrame from Streamlit data_editor diff dict."""
+    base = orig_df.drop(columns=["id"] + drop_cols, errors="ignore").copy()
+    deleted = set(diff.get("deleted_rows", []))
+    for idx_str, changes in diff.get("edited_rows", {}).items():
+        for col, val in changes.items():
+            if col in base.columns:
+                base.at[int(idx_str), col] = val
+    remaining_idx = [i for i in range(len(base)) if i not in deleted]
+    result = base.iloc[remaining_idx].reset_index(drop=True)
+    orig_ids = orig_df["id"].iloc[remaining_idx].reset_index(drop=True) if "id" in orig_df.columns else pd.Series([])
+    for new_row in diff.get("added_rows", []):
+        result = pd.concat([result, pd.DataFrame([new_row])], ignore_index=True)
+        orig_ids = pd.concat([orig_ids, pd.Series([None])], ignore_index=True)
+    result.insert(0, "id", orig_ids)
+    return result
+
+
+st.session_state["_schulden_orig_pt"] = schulden_df
+
+
+def _autosave_schulden_pt() -> None:
+    diff = st.session_state.get("schulden_editor_pt")
+    if not isinstance(diff, dict):
+        return
+    orig = st.session_state.get("_schulden_orig_pt", pd.DataFrame())
+    if orig.empty:
+        return
+    to_save = _apply_diff(orig, diff, drop_cols=["betaaldag", "resterend", "verwacht_klaar", "huidig_restant"])
+    save_schulden(to_save)
+    st.toast("Schulden opgeslagen", icon="✅")
 
 # ── Uitgaven ──────────────────────────────────────────────────────────────────
 
@@ -153,29 +249,26 @@ if filter_active:
 else:
     st.caption(f"{len(df_out)} transacties")
 
-# Chart always reflects full unfiltered spending, shown after the list
-cat_df = (
-    df_out[df_out["prive_categorie"].fillna("") != ""]
-    .groupby("prive_categorie")["bedrag"].sum().abs()
-    .reset_index()
-    .rename(columns={"prive_categorie": "categorie", "bedrag": "totaal"})
-    .sort_values("totaal", ascending=False)
-)
-
 # ── Pagination — keeps widget count manageable ────────────────────────────────
-PAGE_SIZE = 100
+row_ctrl_col1, row_ctrl_col2 = st.columns([1, 1])
+page_size = row_ctrl_col1.selectbox(
+    "Rijen per pagina",
+    [25, 50, 100],
+    index=0,
+    key="rows_per_page_out",
+)
 total_rows = len(view_out)
-total_pages = max(1, (total_rows + PAGE_SIZE - 1) // PAGE_SIZE)
+total_pages = max(1, (total_rows + page_size - 1) // page_size)
 current_page = int(st.session_state.get("page_out", 1))
 if current_page < 1:
     current_page = 1
 if current_page > total_pages:
     current_page = total_pages
-page = st.number_input(f"Pagina ({current_page}/{total_pages})", min_value=1, max_value=total_pages, value=current_page, step=1,
+page = row_ctrl_col2.number_input(f"Pagina ({current_page}/{total_pages})", min_value=1, max_value=total_pages, value=current_page, step=1,
                         key="page_out",
-                        help=f"{total_rows} transacties — {PAGE_SIZE} per pagina")
+                        help=f"{total_rows} transacties — {page_size} per pagina")
 st.caption(f"Pagina {int(page)}/{total_pages}")
-page_df = view_out.iloc[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
+page_df = view_out.iloc[(page - 1) * page_size : page * page_size]
 
 for _, tx in page_df.iterrows():
     tx_id     = int(tx["id"])
@@ -217,17 +310,6 @@ for _, tx in page_df.iterrows():
             args=(tx_id, str(tx["naam"])),
         )
 
-if not cat_df.empty:
-    st.divider()
-    st.caption("Uitgaven per categorie (alle transacties)")
-    bars = alt.Chart(cat_df).mark_bar().encode(
-        x=alt.X("totaal:Q", title="Bedrag"),
-        y=alt.Y("categorie:N", sort="-x", title=None),
-        tooltip=[alt.Tooltip("categorie:N"), alt.Tooltip("totaal:Q", format=",.2f")],
-    )
-    labels = bars.mark_text(align="left", dx=4).encode(text=alt.Text("totaal:Q", format=",.0f"))
-    st.altair_chart(bars + labels, use_container_width=True)
-
 st.divider()
 
 # ── Inkomsten ─────────────────────────────────────────────────────────────────
@@ -251,3 +333,68 @@ st.dataframe(
         "Bedrag": st.column_config.NumberColumn(format="€ %.2f"),
     },
 )
+
+st.divider()
+
+# ── Schulden (verplaatst van Privé Posten) ───────────────────────────────────
+
+st.subheader("💳 Schulden")
+
+if schulden_df.empty:
+    st.info("Nog geen schulden ingevoerd.")
+else:
+    edit_schulden = schulden_df.drop(columns=["id", "betaaldag"], errors="ignore").copy()
+    _f = lambda x: float(x or 0)
+    edit_schulden["huidig_restant"] = (
+        edit_schulden["origineel_bedrag"].apply(_f)
+        - edit_schulden["termijn_bedrag"].apply(_f)
+        * edit_schulden["betaald_termijnen"].apply(lambda x: int(x or 0))
+        - edit_schulden["extra_betaald"].apply(_f)
+    ).clip(lower=0).round(2)
+    edit_schulden["resterend"] = (
+        edit_schulden["aantal_termijnen"].apply(lambda x: int(x or 0))
+        - edit_schulden["betaald_termijnen"].apply(lambda x: int(x or 0))
+    ).clip(lower=0)
+
+    freq_months = {"maandelijks": 1, "kwartaal": 3, "halfjaar": 6, "jaar": 12}
+
+    def _verwacht_klaar(row) -> str:
+        try:
+            start = pd.to_datetime(str(row.get("start_datum") or "")).date()
+            n_terms = int(row.get("aantal_termijnen") or 0)
+            months = freq_months.get(str(row.get("frequentie") or "maandelijks"), 1)
+            if n_terms <= 0:
+                return ""
+            eind = start + relativedelta(months=n_terms * months)
+            return eind.strftime("%d-%m-%Y")
+        except Exception:
+            return ""
+
+    edit_schulden["verwacht_klaar"] = edit_schulden.apply(_verwacht_klaar, axis=1)
+    edit_schulden = edit_schulden[[
+        "naam", "betaald_termijnen", "aantal_termijnen", "resterend",
+        "termijn_bedrag", "origineel_bedrag", "huidig_restant",
+        "start_datum", "betaaldatum", "frequentie", "verwacht_klaar",
+    ]]
+
+    st.data_editor(
+        edit_schulden,
+        use_container_width=True,
+        num_rows="dynamic",
+        hide_index=True,
+        on_change=_autosave_schulden_pt,
+        column_config={
+            "naam":              st.column_config.TextColumn("Naam", width="medium"),
+            "betaald_termijnen": st.column_config.NumberColumn("Betaald", min_value=0, width="small"),
+            "aantal_termijnen":  st.column_config.NumberColumn("Totaal termijnen", min_value=0, width="small"),
+            "resterend":         st.column_config.NumberColumn("Resterend", min_value=0, width="small", disabled=True),
+            "termijn_bedrag":    st.column_config.NumberColumn("Termijn bedrag", format="€ %.2f", width="small"),
+            "origineel_bedrag":  st.column_config.NumberColumn("Origineel bedrag", format="€ %.2f", width="small"),
+            "huidig_restant":    st.column_config.NumberColumn("Huidig restant", format="€ %.2f", width="small", disabled=True),
+            "start_datum":       st.column_config.DateColumn("Startdatum", format="DD-MM-YYYY", width="small"),
+            "betaaldatum":       st.column_config.DateColumn("Volgende betaling", format="DD-MM-YYYY", width="small"),
+            "frequentie":        st.column_config.SelectboxColumn("Frequentie", options=FREQUENTIES, width="small"),
+            "verwacht_klaar":    st.column_config.TextColumn("Verwacht klaar", width="small", disabled=True),
+        },
+        key="schulden_editor_pt",
+    )
