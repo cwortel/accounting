@@ -6,10 +6,10 @@ from db import (
     unlink_bank_transaction,
 )
 
-st.set_page_config(page_title="Overzicht", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Zakelijk Overzicht", page_icon="📊", layout="wide")
 init_db()
 
-st.title("📊 Overzicht Boekhouding")
+st.title("📊 Zakelijk Overzicht")
 
 # ── Shared controls ───────────────────────────────────────────────────────────
 
@@ -18,6 +18,7 @@ kw_label = st.sidebar.selectbox("Kwartaal", ["Alle", "Q1", "Q2", "Q3", "Q4"])
 kw_num = None if kw_label == "Alle" else int(kw_label[1])
 
 categories = get_categories()
+PAYMENT_SOURCES = ["Onbekend", "Privé rekening", "Privé creditcard", "Contant", "Bank zakelijk"]
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 
@@ -138,15 +139,20 @@ st.divider()
 # ── Uitgaven ──────────────────────────────────────────────────────────────────
 
 st.subheader("📤 Uitgaven")
-st.caption("Voer Totaal en BTW% in; Ex BTW en BTW worden automatisch berekend. Afgerekend wordt beheerd via bank.")
+st.caption("Voer Totaal en BTW% in; Ex BTW en BTW worden automatisch berekend. Afgerekend kan via bank of handmatig (privé/creditcard/contant).")
 
-exp_cols = ["factuur", "naam", "datum", "categorie", "btw_pct", "total", "ex_btw", "btw", "afgerekend"]
+exp_cols = ["factuur", "naam", "datum", "categorie", "btw_pct", "total", "ex_btw", "btw", "afgerekend", "betaal_bron"]
 exp_data_cols = ["id"] + exp_cols
 exp_display_full = exp_df[exp_data_cols].copy() if not exp_df.empty else pd.DataFrame(columns=exp_data_cols)
+if "betaal_bron" not in exp_display_full.columns:
+    exp_display_full["betaal_bron"] = "Onbekend"
+exp_display_full["betaal_bron"] = exp_display_full["betaal_bron"].replace("", "Onbekend").fillna("Onbekend")
 
 # Auto-check afgerekend for bank-matched rows
 if "id" in exp_df.columns and not exp_display_full.empty:
-    exp_display_full.loc[exp_df["id"].isin(matched_exp_ids).values, "afgerekend"] = True
+    linked_mask = exp_df["id"].isin(matched_exp_ids).values
+    exp_display_full.loc[linked_mask, "afgerekend"] = True
+    exp_display_full.loc[linked_mask, "betaal_bron"] = "Bank zakelijk"
 
 exp_display_full = _precompute_btw(exp_display_full)
 
@@ -187,13 +193,14 @@ exp_col_cfg = {
     "ex_btw":     st.column_config.NumberColumn(   "Ex BTW",     format="€ %.2f",       width="small",  disabled=True),
     "btw":        st.column_config.NumberColumn(   "BTW",        format="€ %.2f",       width="small",  disabled=True),
     "bankboeking": st.column_config.TextColumn(    "Bankboeking",                      width="large"),
-    "afgerekend": st.column_config.CheckboxColumn( "Afgerekend",                        width="small",  disabled=True),
+    "afgerekend": st.column_config.CheckboxColumn( "Afgerekend",                        width="small"),
+    "betaal_bron": st.column_config.SelectboxColumn("Betaald via", options=PAYMENT_SOURCES, width="medium"),
 }
 
 exp_edited = st.data_editor(
     exp_display, column_config=exp_col_cfg,
     num_rows="dynamic", use_container_width=True, hide_index=True,
-    disabled=["ex_btw", "btw", "bankboeking", "afgerekend"],
+    disabled=["ex_btw", "btw", "bankboeking"],
     key=f"exp_{jaar}_{kw_label}_{filter_naam}_{filter_cat}",
 )
 _totals_row(exp_edited, ["total", "ex_btw", "btw"], exp_cols + ["bankboeking"], exp_col_cfg, label_col="naam")
@@ -242,6 +249,14 @@ with st.expander("🔎 Details gekoppelde bankboekingen", expanded=False):
 if st.button("💾 Uitgaven opslaan", type="primary", key="save_exp"):
     exp_to_save = exp_edited.drop(columns=["bankboeking"], errors="ignore")
     exp_to_save["id"] = pd.to_numeric(exp_to_save.index, errors="coerce")
+    exp_to_save["betaal_bron"] = exp_to_save["betaal_bron"].replace("", "Onbekend").fillna("Onbekend")
+    exp_to_save.loc[exp_to_save["betaal_bron"].isin(["Privé rekening", "Privé creditcard", "Contant"]), "afgerekend"] = True
+
+    # Bank-linked expenses remain authoritative: always settled via business bank.
+    linked_mask = exp_to_save["id"].isin(matched_exp_ids)
+    exp_to_save.loc[linked_mask, "afgerekend"] = True
+    exp_to_save.loc[linked_mask, "betaal_bron"] = "Bank zakelijk"
+
     filter_active = bool(filter_naam) or filter_cat != "Alle"
     if filter_active and visible_ids:
         fresh = get_expenses(jaar, kw_num)

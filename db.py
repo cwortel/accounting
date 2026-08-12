@@ -79,12 +79,26 @@ def init_db() -> None:
                 naam TEXT    NOT NULL UNIQUE
             );
         """)
+        for col, definition in [
+            ("betaal_bron", "TEXT NOT NULL DEFAULT ''"),
+            ("betaal_bron_notitie", "TEXT NOT NULL DEFAULT ''"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE expenses ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass
         for cat in DEFAULT_CATEGORIES:
             conn.execute("INSERT OR IGNORE INTO categories (naam) VALUES (?)", (cat,))
         conn.commit()
     with get_connection() as conn:
+        _init_bank_table(conn)
         _init_prive_tables(conn)
         _repair_orphaned_links(conn)
+        conn.execute(
+            "UPDATE expenses SET betaal_bron='Bank zakelijk' "
+            "WHERE id IN (SELECT DISTINCT expense_id FROM bank_transactions WHERE expense_id IS NOT NULL) "
+            "AND (betaal_bron IS NULL OR betaal_bron='')"
+        )
         conn.commit()
 
 
@@ -171,11 +185,17 @@ def get_expenses(jaar: int, kwartaal: int = None) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=[
             "id", "factuur", "naam", "datum", "categorie",
-            "btw_pct", "btw", "ex_btw", "total", "afgerekend", "jaar", "kwartaal",
+            "btw_pct", "btw", "ex_btw", "total", "afgerekend", "betaal_bron", "betaal_bron_notitie", "jaar", "kwartaal",
         ])
+    if "betaal_bron" not in df.columns:
+        df["betaal_bron"] = ""
+    if "betaal_bron_notitie" not in df.columns:
+        df["betaal_bron_notitie"] = ""
     df["datum"] = df["datum"].apply(_to_date)
     df["afgerekend"] = df["afgerekend"].astype(bool)
     df["btw_pct"] = df["btw_pct"].astype(int)
+    df["betaal_bron"] = df["betaal_bron"].fillna("")
+    df["betaal_bron_notitie"] = df["betaal_bron_notitie"].fillna("")
     return df
 
 
@@ -209,6 +229,13 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
             btw = round(total - ex_btw, 2)
             row_q = _safe_int(row.get("kwartaal"), kwartaal or 1)
             row_id = _safe_int(row.get("id"), 0)
+            note_val = row.get("betaal_bron_notitie", None)
+            if note_val is None and row_id and row_id in existing_ids:
+                prev = conn.execute(
+                    "SELECT betaal_bron_notitie FROM expenses WHERE id=?",
+                    (row_id,),
+                ).fetchone()
+                note_val = prev[0] if prev else ""
             vals = (
                 factuur,
                 naam,
@@ -219,13 +246,15 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
                 ex_btw,
                 total,
                 _safe_bool(row.get("afgerekend")),
+                str(row.get("betaal_bron") or ""),
+                str(note_val or ""),
                 jaar,
                 row_q,
             )
             if row_id and row_id in existing_ids:
                 conn.execute(
                     "UPDATE expenses SET factuur=?, naam=?, datum=?, categorie=?, "
-                    "btw_pct=?, btw=?, ex_btw=?, total=?, afgerekend=?, jaar=?, kwartaal=? "
+                    "btw_pct=?, btw=?, ex_btw=?, total=?, afgerekend=?, betaal_bron=?, betaal_bron_notitie=?, jaar=?, kwartaal=? "
                     "WHERE id=?",
                     vals + (row_id,),
                 )
@@ -233,8 +262,8 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
             else:
                 cur = conn.execute(
                     "INSERT INTO expenses "
-                    "(factuur,naam,datum,categorie,btw_pct,btw,ex_btw,total,afgerekend,jaar,kwartaal) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "(factuur,naam,datum,categorie,btw_pct,btw,ex_btw,total,afgerekend,betaal_bron,betaal_bron_notitie,jaar,kwartaal) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     vals,
                 )
                 seen_ids.add(int(cur.lastrowid))
@@ -770,7 +799,71 @@ def link_bank_transaction(tx_id: int, expense_id: int = None, income_id: int = N
             "UPDATE bank_transactions SET expense_id=?, income_id=?, fooi=?, prive=0, prive_omschrijving='' WHERE id=?",
             (expense_id, income_id, round(fooi, 2), tx_id),
         )
+        if expense_id:
+            conn.execute(
+                "UPDATE expenses SET afgerekend=1, betaal_bron='Bank zakelijk' WHERE id=?",
+                (expense_id,),
+            )
         conn.commit()
+
+
+def create_expense_from_bank_transaction(
+    tx_id: int,
+    categorie: str,
+    btw_pct: int = 0,
+    factuur: str = "",
+    naam: str = "",
+    notitie: str = "",
+) -> int:
+    with get_connection() as conn:
+        _init_bank_table(conn)
+        tx = conn.execute(
+            "SELECT id, datum, bedrag, naam, jaar, kwartaal, expense_id, income_id, prive, intern "
+            "FROM bank_transactions WHERE id=?",
+            (tx_id,),
+        ).fetchone()
+        if not tx:
+            raise ValueError("Transactie niet gevonden.")
+        if float(tx["bedrag"] or 0) >= 0:
+            raise ValueError("Alleen afschrijvingen kunnen als uitgave worden aangemaakt.")
+        if tx["expense_id"] is not None or tx["income_id"] is not None or int(tx["prive"] or 0) or int(tx["intern"] or 0):
+            raise ValueError("Deze transactie is al verwerkt. Ontkoppel eerst indien nodig.")
+
+        total = round(abs(float(tx["bedrag"] or 0)), 2)
+        pct = int(btw_pct or 0)
+        ex_btw = round(total / (1 + pct / 100), 2) if pct > 0 else total
+        btw = round(total - ex_btw, 2)
+        exp_naam = str(naam or tx["naam"] or "Bankuitgave").strip()
+
+        cur = conn.execute(
+            "INSERT INTO expenses "
+            "(factuur, naam, datum, categorie, btw_pct, btw, ex_btw, total, afgerekend, betaal_bron, betaal_bron_notitie, jaar, kwartaal) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(factuur or "").strip(),
+                exp_naam,
+                _date_str(tx["datum"]),
+                str(categorie or "Other").strip(),
+                pct,
+                btw,
+                ex_btw,
+                total,
+                1,
+                "Bank zakelijk",
+                str(notitie or "").strip(),
+                int(tx["jaar"]),
+                int(tx["kwartaal"]),
+            ),
+        )
+        expense_id = int(cur.lastrowid)
+
+        conn.execute(
+            "UPDATE bank_transactions SET expense_id=?, income_id=NULL, fooi=0, prive=0, prive_omschrijving='', intern=0, intern_omschrijving='' "
+            "WHERE id=?",
+            (expense_id, tx_id),
+        )
+        conn.commit()
+        return expense_id
 
 
 def mark_bank_as_prive(tx_id: int, omschrijving: str = "") -> None:
@@ -817,6 +910,17 @@ def set_prive_recurring(tx_id: int, is_recurring: bool) -> None:
             (int(is_recurring), tx_id),
         )
         conn.commit()
+
+
+def set_prive_recurring_by_naam(naam: str, is_recurring: bool) -> int:
+    """Apply recurring flag to all transactions with the same naam. Returns count updated."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE bank_transactions SET is_recurring=? WHERE naam=?",
+            (int(is_recurring), naam),
+        )
+        conn.commit()
+        return cur.rowcount
 
 
 def set_prive_categorie_by_naam(naam: str, categorie: str) -> int:

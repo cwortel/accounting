@@ -6,7 +6,7 @@ from db import (
     monthly_equivalent, FREQUENTIES,
 )
 
-st.set_page_config(page_title="Schulden & Vaste Lasten", page_icon="💳", layout="wide")
+st.set_page_config(page_title="Prive Vaste Lasten", page_icon="💳", layout="wide")
 init_db()
 
 st.title("💳 Schulden & Vaste Lasten")

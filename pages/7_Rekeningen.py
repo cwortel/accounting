@@ -6,7 +6,7 @@ from db import (
     import_camt, import_rabobank_csv, get_bank_transactions,
 )
 
-st.set_page_config(page_title="Rekeningen", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="Bank Rekeningen", page_icon="🏦", layout="wide")
 init_db()
 
 BANK_DIR = Path("data/BankTransactions")

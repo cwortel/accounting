@@ -4,10 +4,11 @@ from pathlib import Path
 from db import (
     init_db, import_camt, import_rabobank_csv, get_bank_transactions,
     get_expenses, get_income, link_bank_transaction, unlink_bank_transaction,
-    mark_bank_as_prive, mark_bank_as_intern,
+    mark_bank_as_prive, mark_bank_as_intern, get_rekeningen, get_categories,
+    create_expense_from_bank_transaction,
 )
 
-st.set_page_config(page_title="Bank", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="Zakelijke Transacties", page_icon="🏦", layout="wide")
 init_db()
 
 
@@ -22,9 +23,10 @@ def _score_expense(exp_row, amt: float, tx_datum, tx_naam: str, tx_ref: str) -> 
         return -1
 
     score = 0
+    near_exact_amount = ratio <= 1.005
 
     # Amount: near-exact match scores highest; large tip scores low
-    if ratio <= 1.005:
+    if near_exact_amount:
         score += 10
     elif ratio <= 1.10:
         score += 6
@@ -34,6 +36,7 @@ def _score_expense(exp_row, amt: float, tx_datum, tx_naam: str, tx_ref: str) -> 
         score += 0  # 20-25% tip: allowed but unlikely
 
     # Date proximity: receipts are typically paid same day or within a week
+    days = None
     try:
         exp_date = pd.to_datetime(str(exp_row["datum"])).date()
         days = abs((tx_datum - exp_date).days)
@@ -45,21 +48,32 @@ def _score_expense(exp_row, amt: float, tx_datum, tx_naam: str, tx_ref: str) -> 
             score += 3
         elif days <= 14:
             score += 1
-        else:
-            return -1  # dates too far apart
     except Exception:
         pass
 
     # Name: supplier name in bank naam or referentie (case-insensitive)
     hay = (str(tx_naam) + " " + str(tx_ref)).lower()
     exp_naam = str(exp_row.get("naam") or "").lower().strip()
+    name_score = 0
     if exp_naam and exp_naam in hay:
-        score += 10
+        name_score = 10
     else:
         # Try longest word ≥4 chars from expense name
         words = sorted([w for w in exp_naam.split() if len(w) >= 4], key=len, reverse=True)
         if words and words[0] in hay:
-            score += 5
+            name_score = 5
+
+    score += name_score
+
+    if days is not None and days > 14:
+        # Allow a wider window for recurring invoices when amount is exact and name strongly matches.
+        if near_exact_amount and name_score >= 5 and days <= 35:
+            if days <= 21:
+                score += 1
+            else:
+                score += 0
+        else:
+            return -1  # dates too far apart
 
     return score
 
@@ -105,6 +119,36 @@ def _score_income(inc_row, amt: float, tx_datum, tx_naam: str, tx_ref: str) -> i
 
     return score
 
+def _transfer_from_to(tx, rekening_names: dict) -> dict:
+    bedrag = float(tx.get("bedrag") or 0)
+    eigen_iban = str(tx.get("rekening") or "").strip()
+    tegen_iban = str(tx.get("iban") or "").strip()
+
+    eigen_naam = str(rekening_names.get(eigen_iban) or "Eigen rekening")
+    tegen_naam_default = str(tx.get("naam") or "Tegenrekening")
+    tegen_naam = str(rekening_names.get(tegen_iban) or tegen_naam_default)
+
+    if bedrag < 0:
+        van_naam, van_iban = eigen_naam, eigen_iban or "—"
+        naar_naam, naar_iban = tegen_naam, tegen_iban or "—"
+    else:
+        van_naam, van_iban = tegen_naam, tegen_iban or "—"
+        naar_naam, naar_iban = eigen_naam, eigen_iban or "—"
+
+    if eigen_iban and tegen_iban:
+        intern_label = f"{eigen_iban} > {tegen_iban}" if bedrag < 0 else f"{eigen_iban} < {tegen_iban}"
+    else:
+        intern_label = f"{van_iban} > {naar_iban}" if bedrag < 0 else f"{naar_iban} < {van_iban}"
+
+    return {
+        "van_naam": van_naam,
+        "van_iban": van_iban,
+        "naar_naam": naar_naam,
+        "naar_iban": naar_iban,
+        "intern_label": intern_label,
+    }
+
+
 BANK_DIR = Path(__file__).parent.parent / "data" / "BankTransactions"
 
 st.title("🏦 Banktransacties")
@@ -118,7 +162,9 @@ kw_num = None if kw_label == "Alle" else int(kw_label[1])
 only_unmatched = st.sidebar.checkbox("Alleen ongekoppeld", value=False)
 
 # Always filter to business accounts only
-ZAKELIJK_IBANS = ["NL84RABO0188971130", "NL49RABO3161681290"]
+BETALINGS_IBAN = "NL84RABO0188971130"
+SPAAR_IBAN = "NL49RABO3161681290"
+ZAKELIJK_IBANS = [BETALINGS_IBAN, SPAAR_IBAN]
 
 # ── Import ─────────────────────────────────────────────────────────────────────
 with st.expander("📂 Importeer bestanden", expanded=False):
@@ -161,12 +207,14 @@ n_matched = matched.sum()
 n_prive = is_prive.sum()
 n_intern = is_intern.sum()
 n_total = len(df)
+df_betaal = df[df["rekening"] == BETALINGS_IBAN].copy()
+df_spaar = df[df["rekening"] == SPAAR_IBAN].copy()
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Transacties", n_total)
 c2.metric("Gekoppeld", int(n_matched))
 c3.metric("Privé onttrekking", int(n_prive))
 c4.metric("Intern", int(n_intern))
-c5.metric("Ongekoppeld", int(n_total - n_matched - n_prive - n_intern))
+c5.metric("Betaal/Spaar", f"{len(df_betaal)}/{len(df_spaar)}")
 
 st.divider()
 
@@ -175,194 +223,250 @@ all_exp = pd.concat([get_expenses(jaar - 1), get_expenses(jaar), get_expenses(ja
 all_inc = pd.concat([get_income(jaar - 1),   get_income(jaar),   get_income(jaar + 1)],   ignore_index=True)
 all_exp = all_exp.dropna(subset=["id"])
 all_inc = all_inc.dropna(subset=["id"])
+categories = get_categories()
+rekeningen_df = get_rekeningen()
+rekening_names = {
+    str(r.get("iban") or "").strip(): str(r.get("naam") or "").strip()
+    for _, r in rekeningen_df.iterrows()
+    if str(r.get("iban") or "").strip()
+}
 
 # ── Per-transaction rows ───────────────────────────────────────────────────────
-for _, tx in df.iterrows():
-    tx_id = int(tx["id"])
-    is_matched = pd.notna(tx.get("expense_id")) or pd.notna(tx.get("income_id"))
-    is_prive_tx = bool(tx.get("prive"))
-    is_intern_tx = bool(tx.get("intern"))
-    bedrag = tx["bedrag"]
-    bedrag_str = f"€ {bedrag:+,.2f}"
+def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
+    for _, tx in df_rows.iterrows():
+        tx_id = int(tx["id"])
+        key_base = f"{key_prefix}_{tx_id}"
+        is_matched = pd.notna(tx.get("expense_id")) or pd.notna(tx.get("income_id"))
+        is_prive_tx = bool(tx.get("prive"))
+        is_intern_tx = bool(tx.get("intern"))
+        bedrag = tx["bedrag"]
+        bedrag_str = f"€ {bedrag:+,.2f}"
 
-    if is_intern_tx:
-        col_status = "🔄"
-    elif is_prive_tx:
-        col_status = "🟡"
-    elif is_matched:
-        col_status = "🟢"
-    elif bedrag < 0:
-        col_status = "🔴"
-    else:
-        col_status = "🔵"
-    label = f"{col_status} {tx['datum']}  {bedrag_str}  —  {tx['naam']}"
-    if is_intern_tx and tx.get("intern_omschrijving"):
-        label += f"  *(intern: {tx['intern_omschrijving']})*"
-    elif is_prive_tx and tx.get("prive_omschrijving"):
-        label += f"  *(privé: {tx['prive_omschrijving']})*"
-    elif tx.get("fooi") and tx["fooi"] != 0:
-        label += f"  *(fooi: € {tx['fooi']:.2f})*"
+        if is_intern_tx:
+            col_status = "🔄"
+        elif is_prive_tx:
+            col_status = "🟡"
+        elif is_matched:
+            col_status = "🟢"
+        elif bedrag < 0:
+            col_status = "🔴"
+        else:
+            col_status = "🔵"
+        label = f"{col_status} {tx['datum']}  {bedrag_str}  —  {tx['naam']}"
+        if is_intern_tx and tx.get("intern_omschrijving"):
+            label += f"  *(intern: {tx['intern_omschrijving']})*"
+        elif is_prive_tx and tx.get("prive_omschrijving"):
+            label += f"  *(privé: {tx['prive_omschrijving']})*"
+        elif tx.get("fooi") and tx["fooi"] != 0:
+            label += f"  *(fooi: € {tx['fooi']:.2f})*"
 
-    with st.expander(label, expanded=False):
-        c1, c2 = st.columns([3, 2])
-        with c1:
-            st.markdown(f"**Naam:** {tx['naam']}")
-            st.markdown(f"**IBAN:** {tx['iban'] or '—'}")
-            st.markdown(f"**Referentie:** {tx['referentie'] or '—'}")
-            st.markdown(f"**Bedrag:** {bedrag_str} &nbsp; {'(Betaling)' if bedrag < 0 else '(Ontvangst)'}")
-            if tx.get("fooi") and tx["fooi"] != 0:
-                st.markdown(f"**Fooi/privé:** € {tx['fooi']:.2f}")
+        with st.expander(label, expanded=False):
+            c1, c2 = st.columns([3, 2])
+            route = _transfer_from_to(tx, rekening_names)
+            with c1:
+                st.markdown(f"**Naam:** {tx['naam']}")
+                st.markdown("**Van:**")
+                st.markdown(route["van_naam"])
+                st.markdown(route["van_iban"])
+                st.markdown("**Naar:**")
+                st.markdown(route["naar_naam"])
+                st.markdown(route["naar_iban"])
+                st.markdown(f"**Referentie:** {tx['referentie'] or '—'}")
+                st.markdown(f"**Bedrag:** {bedrag_str} &nbsp; {'(Betaling)' if bedrag < 0 else '(Ontvangst)'}")
+                if tx.get("fooi") and tx["fooi"] != 0:
+                    st.markdown(f"**Fooi/privé:** € {tx['fooi']:.2f}")
 
-        with c2:
-            if is_intern_tx:
-                omschr = tx.get("intern_omschrijving") or ""
-                st.info(f"🔄 Interne overboeking: **{omschr or '—'}**")
-                if st.button("🔓 Ontkoppelen", key=f"unlink_{tx_id}"):
-                    unlink_bank_transaction(tx_id)
-                    st.rerun()
-            elif is_prive_tx:
-                omschr = tx.get("prive_omschrijving") or ""
-                st.warning(f"\U0001f7e1 Priv\u00e9 onttrekking: **{omschr or '\u2014'}**")
-                if st.button("\U0001f513 Ontkoppelen", key=f"unlink_{tx_id}"):
-                    unlink_bank_transaction(tx_id)
-                    st.rerun()
-            elif is_matched:
-                if pd.notna(tx.get("expense_id")):
-                    matched_row = all_exp[all_exp["id"] == tx["expense_id"]]
-                    if not matched_row.empty:
-                        r = matched_row.iloc[0]
-                        st.success(f"Gekoppeld aan uitgave: **{r['naam']}** (€ {r['total']:.2f})")
-                if pd.notna(tx.get("income_id")):
-                    matched_row = all_inc[all_inc["id"] == tx["income_id"]]
-                    if not matched_row.empty:
-                        r = matched_row.iloc[0]
-                        st.success(f"Gekoppeld aan inkomst: **{r['naam']}** (€ {r['total']:.2f})")
-                if st.button("🔓 Ontkoppelen", key=f"unlink_{tx_id}"):
-                    unlink_bank_transaction(tx_id)
-                    st.rerun()
-            else:
-                # Matching form
-                st.markdown("**Koppel aan:**")
-                # Default to Inkomst for credits, Uitgave for debits
-                default_type = "Inkomst" if bedrag > 0 else "Uitgave"
-                match_type = st.radio(
-                    "Type",
-                    ["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"],
-                    index=["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"].index(default_type),
-                    key=f"type_{tx_id}",
-                    horizontal=True,
-                )
-
-                if match_type == "Interne overboeking":
-                    omschr = st.text_input(
-                        "Omschrijving (optioneel)",
-                        value="Overboeking naar spaarrekening" if bedrag < 0 else "Overboeking van spaarrekening",
-                        key=f"intern_omschr_{tx_id}",
-                    )
-                    if st.button("🔄 Markeer als Intern", key=f"intern_{tx_id}", type="primary"):
-                        mark_bank_as_intern(tx_id, omschr)
+            with c2:
+                if is_intern_tx:
+                    omschr = tx.get("intern_omschrijving") or ""
+                    st.info(f"🔄 Interne overboeking: **{omschr or '—'}**")
+                    if st.button("🔓 Ontkoppelen", key=f"unlink_{key_base}"):
+                        unlink_bank_transaction(tx_id)
                         st.rerun()
-
-                elif match_type == "Privé onttrekking":
-                    omschr = st.text_input(
-                        "Omschrijving (optioneel)",
-                        value="Privé onttrekking" if bedrag < 0 else "Privé storting",
-                        key=f"prive_omschr_{tx_id}",
-                    )
-                    if st.button("\U0001f7e1 Markeer als Privé", key=f"prive_{tx_id}", type="primary"):
-                        mark_bank_as_prive(tx_id, omschr)
+                elif is_prive_tx:
+                    omschr = tx.get("prive_omschrijving") or ""
+                    st.warning(f"\U0001f7e1 Priv\u00e9 onttrekking: **{omschr or '\u2014'}**")
+                    if st.button("\U0001f513 Ontkoppelen", key=f"unlink_{key_base}"):
+                        unlink_bank_transaction(tx_id)
                         st.rerun()
-
-                elif match_type == "Uitgave" and not all_exp.empty:
-                    amt = abs(bedrag)
-                    tx_datum_val = tx["datum"] if hasattr(tx["datum"], "year") else None
-                    tx_naam_val = str(tx.get("naam") or "")
-                    tx_ref_val = str(tx.get("referentie") or "")
-
-                    scored = []
-                    for _, er in all_exp.iterrows():
-                        s = _score_expense(er, amt, tx_datum_val, tx_naam_val, tx_ref_val)
-                        if s >= 0:
-                            scored.append((s, er))
-                    scored.sort(key=lambda x: -x[0])
-                    candidates_rows = [r for _, r in scored[:8]]
-
-                    if not candidates_rows:
-                        st.info("Geen passende uitgaven gevonden (datum, bedrag of naam komen niet overeen).")
-                    else:
-                        candidates = pd.DataFrame(candidates_rows)
-                        options = {
-                            f"{r['datum']} — {r['naam']} (€ {r['total']:.2f})": int(r["id"])
-                            for _, r in candidates.iterrows()
-                        }
-                        selected_label = st.selectbox(
-                            "Kies uitgave",
-                            options=list(options.keys()),
-                            key=f"sel_exp_{tx_id}",
-                        )
-                        selected_id = options[selected_label]
-                        selected_row = all_exp[all_exp["id"] == selected_id].iloc[0]
-                        selected_total = float(selected_row["total"])
-
-                        diff = round(abs(bedrag) - selected_total, 2)
-                        fooi_val = 0.0
-                        if diff > 0:
-                            st.warning(
-                                f"Banktransactie is € {diff:.2f} hoger dan de factuur. "
-                                f"Dit kan een fooi of privé-deel zijn."
-                            )
-                            fooi_val = st.number_input(
-                                "Fooi / privé bedrag (€)",
-                                min_value=0.0,
-                                max_value=float(abs(bedrag)),
-                                value=diff,
-                                step=0.01,
-                                key=f"fooi_{tx_id}",
-                            )
-
-                        if st.button("✅ Koppelen", key=f"link_exp_{tx_id}", type="primary"):
-                            link_bank_transaction(tx_id, expense_id=selected_id, fooi=fooi_val)
-                            st.rerun()
-
-                elif match_type == "Inkomst" and not all_inc.empty:
-                    amt = abs(bedrag)
-                    tx_datum_val = tx["datum"] if hasattr(tx["datum"], "year") else None
-                    tx_naam_val = str(tx.get("naam") or "")
-                    tx_ref_val = str(tx.get("referentie") or "")
-
-                    scored = []
-                    for _, ir in all_inc.iterrows():
-                        s = _score_income(ir, amt, tx_datum_val, tx_naam_val, tx_ref_val)
-                        if s >= 0:
-                            scored.append((s, ir))
-                    scored.sort(key=lambda x: -x[0])
-                    candidates_rows = [r for _, r in scored[:8]]
-
-                    if not candidates_rows:
-                        st.info("Geen passende inkomsten gevonden.")
-                    else:
-                        candidates = pd.DataFrame(candidates_rows)
-                        options = {
-                            f"{r['datum']} — {r['naam']} (€ {r['total']:.2f})": int(r["id"])
-                            for _, r in candidates.iterrows()
-                        }
-                        selected_label = st.selectbox(
-                            "Kies inkomst",
-                            options=list(options.keys()),
-                            key=f"sel_inc_{tx_id}",
-                        )
-                        selected_id = options[selected_label]
-
-                        if st.button("✅ Koppelen", key=f"link_inc_{tx_id}", type="primary"):
-                            link_bank_transaction(tx_id, income_id=selected_id)
-                            st.rerun()
+                elif is_matched:
+                    if pd.notna(tx.get("expense_id")):
+                        matched_row = all_exp[all_exp["id"] == tx["expense_id"]]
+                        if not matched_row.empty:
+                            r = matched_row.iloc[0]
+                            factuur = str(r.get("factuur") or "").strip()
+                            suffix = f" - {factuur}" if factuur else ""
+                            st.success(f"Gekoppeld aan uitgave: **{r['naam']}** (€ {r['total']:.2f}){suffix}")
+                    if pd.notna(tx.get("income_id")):
+                        matched_row = all_inc[all_inc["id"] == tx["income_id"]]
+                        if not matched_row.empty:
+                            r = matched_row.iloc[0]
+                            st.success(f"Gekoppeld aan inkomst: **{r['naam']}** (€ {r['total']:.2f})")
+                    if st.button("🔓 Ontkoppelen", key=f"unlink_{key_base}"):
+                        unlink_bank_transaction(tx_id)
+                        st.rerun()
                 else:
-                    st.info("Geen uitgaven/inkomsten beschikbaar voor dit jaar.")
+                    # Matching form
+                    st.markdown("**Koppel aan:**")
+                    default_type = "Inkomst" if bedrag > 0 else "Uitgave"
+                    match_type = st.radio(
+                        "Type",
+                        ["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"],
+                        index=["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"].index(default_type),
+                        key=f"type_{key_base}",
+                        horizontal=True,
+                    )
+
+                    if match_type == "Interne overboeking":
+                        default_omschr = route["intern_label"]
+                        st.caption(f"Van/Naar voor deze boeking: {route['van_iban']} → {route['naar_iban']}")
+                        omschr = st.text_input(
+                            "Omschrijving (optioneel)",
+                            value=default_omschr,
+                            key=f"intern_omschr_{key_base}",
+                        )
+                        if st.button("🔄 Markeer als Intern", key=f"intern_{key_base}", type="primary"):
+                            mark_bank_as_intern(tx_id, omschr)
+                            st.rerun()
+
+                    elif match_type == "Privé onttrekking":
+                        omschr = st.text_input(
+                            "Omschrijving (optioneel)",
+                            value="Privé onttrekking" if bedrag < 0 else "Privé storting",
+                            key=f"prive_omschr_{key_base}",
+                        )
+                        if st.button("\U0001f7e1 Markeer als Privé", key=f"prive_{key_base}", type="primary"):
+                            mark_bank_as_prive(tx_id, omschr)
+                            st.rerun()
+
+                    elif match_type == "Uitgave":
+                        if not all_exp.empty:
+                            amt = abs(bedrag)
+                            tx_datum_val = tx["datum"] if hasattr(tx["datum"], "year") else None
+                            tx_naam_val = str(tx.get("naam") or "")
+                            tx_ref_val = str(tx.get("referentie") or "")
+
+                            scored = []
+                            for _, er in all_exp.iterrows():
+                                s = _score_expense(er, amt, tx_datum_val, tx_naam_val, tx_ref_val)
+                                if s >= 0:
+                                    scored.append((s, er))
+                            scored.sort(key=lambda x: -x[0])
+                            candidates_rows = [r for _, r in scored[:8]]
+
+                            if not candidates_rows:
+                                st.info("Geen passende uitgaven gevonden (datum, bedrag of naam komen niet overeen).")
+                            else:
+                                candidates = pd.DataFrame(candidates_rows)
+                                options = {
+                                    f"{r['datum']} — {r['naam']} (€ {r['total']:.2f})": int(r["id"])
+                                    for _, r in candidates.iterrows()
+                                }
+                                selected_label = st.selectbox(
+                                    "Kies uitgave",
+                                    options=list(options.keys()),
+                                    key=f"sel_exp_{key_base}",
+                                )
+                                selected_id = options[selected_label]
+                                selected_row = all_exp[all_exp["id"] == selected_id].iloc[0]
+                                selected_total = float(selected_row["total"])
+
+                                diff = round(abs(bedrag) - selected_total, 2)
+                                fooi_val = 0.0
+                                if diff > 0:
+                                    st.warning(
+                                        f"Banktransactie is € {diff:.2f} hoger dan de factuur. "
+                                        f"Dit kan een fooi of privé-deel zijn."
+                                    )
+                                    fooi_val = st.number_input(
+                                        "Fooi / privé bedrag (€)",
+                                        min_value=0.0,
+                                        max_value=float(abs(bedrag)),
+                                        value=diff,
+                                        step=0.01,
+                                        key=f"fooi_{key_base}",
+                                    )
+
+                                if st.button("✅ Koppelen", key=f"link_exp_{key_base}", type="primary"):
+                                    link_bank_transaction(tx_id, expense_id=selected_id, fooi=fooi_val)
+                                    st.rerun()
+                        else:
+                            st.info("Geen uitgaven beschikbaar om aan te koppelen.")
+
+                        st.markdown("---")
+                        st.caption("Geen bon? Maak direct een nieuwe uitgave aan vanuit deze transactie.")
+                        new_factuur = st.text_input("Factuur (optioneel)", key=f"new_exp_factuur_{key_base}")
+                        new_naam = st.text_input("Naam uitgave", value=str(tx.get("naam") or ""), key=f"new_exp_naam_{key_base}")
+                        new_cat = st.selectbox("Categorie", options=categories, key=f"new_exp_cat_{key_base}")
+                        new_btw = st.selectbox("BTW %", options=[0, 9, 21], index=0, key=f"new_exp_btw_{key_base}")
+                        new_note = st.text_input("Notitie (optioneel)", key=f"new_exp_note_{key_base}")
+                        if st.button("➕ Nieuwe uitgave aanmaken", key=f"create_exp_{key_base}"):
+                            try:
+                                new_id = create_expense_from_bank_transaction(
+                                    tx_id=tx_id,
+                                    categorie=str(new_cat),
+                                    btw_pct=int(new_btw),
+                                    factuur=new_factuur,
+                                    naam=new_naam,
+                                    notitie=new_note,
+                                )
+                                st.success(f"Uitgave aangemaakt en gekoppeld (id {new_id}).")
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
+
+                    elif match_type == "Inkomst" and not all_inc.empty:
+                        amt = abs(bedrag)
+                        tx_datum_val = tx["datum"] if hasattr(tx["datum"], "year") else None
+                        tx_naam_val = str(tx.get("naam") or "")
+                        tx_ref_val = str(tx.get("referentie") or "")
+
+                        scored = []
+                        for _, ir in all_inc.iterrows():
+                            s = _score_income(ir, amt, tx_datum_val, tx_naam_val, tx_ref_val)
+                            if s >= 0:
+                                scored.append((s, ir))
+                        scored.sort(key=lambda x: -x[0])
+                        candidates_rows = [r for _, r in scored[:8]]
+
+                        if not candidates_rows:
+                            st.info("Geen passende inkomsten gevonden.")
+                        else:
+                            candidates = pd.DataFrame(candidates_rows)
+                            options = {
+                                f"{r['datum']} — {r['naam']} (€ {r['total']:.2f})": int(r["id"])
+                                for _, r in candidates.iterrows()
+                            }
+                            selected_label = st.selectbox(
+                                "Kies inkomst",
+                                options=list(options.keys()),
+                                key=f"sel_inc_{key_base}",
+                            )
+                            selected_id = options[selected_label]
+
+                            if st.button("✅ Koppelen", key=f"link_inc_{key_base}", type="primary"):
+                                link_bank_transaction(tx_id, income_id=selected_id)
+                                st.rerun()
+                    else:
+                        st.info("Geen uitgaven/inkomsten beschikbaar voor dit jaar.")
+
+
+st.subheader("📌 Betaalrekening transacties")
+if df_betaal.empty:
+    st.info("Geen transacties op de betaalrekening in deze selectie.")
+else:
+    _render_transaction_rows(df_betaal, "betaal")
+
+if not df_spaar.empty:
+    st.divider()
+    with st.expander(f"💾 Spaarrekening transacties ({len(df_spaar)})", expanded=False):
+        st.caption("Minder relevant voor dagelijkse matching; meestal de spiegeling van de betaalrekening.")
+        _render_transaction_rows(df_spaar, "spaar")
 
 # ── Ongeboekt overzicht ───────────────────────────────────────────────────────
 
 all_df_full = get_bank_transactions(jaar, kw_num)
-all_df_full = all_df_full[all_df_full["rekening"].isin(ZAKELIJK_IBANS)] if not all_df_full.empty else all_df_full
+all_df_full = all_df_full[all_df_full["rekening"] == BETALINGS_IBAN] if not all_df_full.empty else all_df_full
 
 if not all_df_full.empty:
     ongeboekt = all_df_full[

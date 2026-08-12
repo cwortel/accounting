@@ -4,6 +4,7 @@ import altair as alt
 from db import (
     init_db, get_prive_spending,
     set_prive_categorie, set_prive_categorie_by_naam, set_prive_recurring,
+    set_prive_recurring_by_naam,
     get_rekeningen,
 )
 
@@ -59,6 +60,7 @@ rekening_filter = rek_options[rek_label]
 # ── Load all transactions (in + out) ─────────────────────────────────────────
 
 all_df = get_prive_spending(jaar, maand, rekening_filter, only_costs=False)
+all_df_year = get_prive_spending(jaar, None, rekening_filter, only_costs=False)
 
 if all_df.empty:
     st.info("Geen transacties gevonden.")
@@ -67,19 +69,40 @@ if all_df.empty:
 df_out = all_df[all_df["bedrag"] < 0].copy()
 df_in  = all_df[all_df["bedrag"] > 0].copy()
 
+def _recurring_mask(df: pd.DataFrame) -> pd.Series:
+    if "is_recurring" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return pd.to_numeric(df["is_recurring"], errors="coerce").fillna(0).astype(int).eq(1)
+
 # ── Top totals ────────────────────────────────────────────────────────────────
 
 totaal_uit = df_out["bedrag"].abs().sum()
 totaal_in  = df_in["bedrag"].sum()
 netto      = totaal_in - totaal_uit
+
+recurring_filtered = df_out[_recurring_mask(df_out)]
+recurring_totaal = recurring_filtered["bedrag"].abs().sum() if not recurring_filtered.empty else 0.0
+
+recurring_year_out = all_df_year[(all_df_year["bedrag"] < 0) & _recurring_mask(all_df_year)].copy()
+if not recurring_year_out.empty:
+    recurring_year_out["maand"] = pd.to_datetime(recurring_year_out["datum"], errors="coerce").dt.month
+    recurring_total_year = float(recurring_year_out["bedrag"].abs().sum())
+    months_available = pd.to_datetime(all_df_year["datum"], errors="coerce").dt.month.dropna().nunique()
+    recurring_avg_month = recurring_total_year / months_available if months_available > 0 else 0.0
+else:
+    recurring_avg_month = 0.0
+
 fmt = lambda x: f"€ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("💰 Inkomsten", fmt(totaal_in))
 c2.metric("💸 Uitgaven", fmt(totaal_uit))
 c3.metric("📊 Netto", fmt(netto),
           delta="positief" if netto >= 0 else "tekort",
           delta_color="normal" if netto >= 0 else "inverse")
+c4.metric("🔄 Vaste lasten", fmt(recurring_totaal))
+c5.metric("📆 Gem. vaste lasten p/m", fmt(recurring_avg_month),
+          help="Gemiddelde over maanden met beschikbare terugkerende kosten in de gekozen jaar/rekening selectie.")
 
 st.divider()
 
@@ -95,14 +118,23 @@ def _on_cat_change(tx_id: int, naam: str) -> None:
     else:
         st.toast("Categorie verwijderd", icon="🗑️")
 
+
+def _on_rec_change(tx_id: int, naam: str) -> None:
+    new_rec = bool(st.session_state.get(f"rec_{tx_id}", False))
+    set_prive_recurring(tx_id, new_rec)
+    n = set_prive_recurring_by_naam(naam, new_rec)
+    if n > 1:
+        st.toast(f"{n} transacties van '{naam}' {'gemarkeerd als vast' if new_rec else 'niet meer vast'}", icon="🔄")
+
 # ── Uitgaven ──────────────────────────────────────────────────────────────────
 
 st.subheader("💸 Uitgaven")
 
-col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
+col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 1, 1])
 filter_naam_out = col_f1.text_input("Naam (bevat)", key="fn_out")
 filter_cat_out  = col_f2.selectbox("Categorie", ["Alle"] + [c for c in PRIVE_CATS if c], key="fc_out")
 only_uncat      = col_f3.checkbox("Ongecategoriseerd", key="uncat_out")
+only_recurring  = col_f4.checkbox("Vaste lasten", key="rec_only_out")
 
 view_out = df_out.copy()
 view_out["prive_categorie"] = view_out["prive_categorie"].fillna("")
@@ -112,8 +144,10 @@ if filter_cat_out != "Alle":
     view_out = view_out[view_out["prive_categorie"] == filter_cat_out]
 if only_uncat:
     view_out = view_out[view_out["prive_categorie"] == ""]
+if only_recurring:
+    view_out = view_out[_recurring_mask(view_out)]
 
-filter_active = bool(filter_naam_out) or filter_cat_out != "Alle" or only_uncat
+filter_active = bool(filter_naam_out) or filter_cat_out != "Alle" or only_uncat or only_recurring
 if filter_active:
     st.info(f"Filter actief — {len(view_out)} van {len(df_out)} transacties zichtbaar")
 else:
@@ -129,19 +163,25 @@ cat_df = (
 )
 
 # ── Pagination — keeps widget count manageable ────────────────────────────────
-PAGE_SIZE = 25
+PAGE_SIZE = 100
 total_rows = len(view_out)
 total_pages = max(1, (total_rows + PAGE_SIZE - 1) // PAGE_SIZE)
-page = st.number_input("Pagina", min_value=1, max_value=total_pages, value=1, step=1,
+current_page = int(st.session_state.get("page_out", 1))
+if current_page < 1:
+    current_page = 1
+if current_page > total_pages:
+    current_page = total_pages
+page = st.number_input(f"Pagina ({current_page}/{total_pages})", min_value=1, max_value=total_pages, value=current_page, step=1,
                         key="page_out",
                         help=f"{total_rows} transacties — {PAGE_SIZE} per pagina")
+st.caption(f"Pagina {int(page)}/{total_pages}")
 page_df = view_out.iloc[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
 
 for _, tx in page_df.iterrows():
     tx_id     = int(tx["id"])
     bedrag    = float(tx["bedrag"])
     cat       = str(tx.get("prive_categorie") or "")
-    recurring = bool(tx.get("is_recurring", 0))
+    recurring = int(pd.to_numeric(tx.get("is_recurring", 0), errors="coerce") or 0) == 1
 
     icon  = "🔄" if recurring else ("🟡" if not cat else "🟢")
     label = f"{icon}  {tx['datum']}  —  **{tx['naam']}**  —  {fmt(abs(bedrag))}"
@@ -155,6 +195,16 @@ for _, tx in page_df.iterrows():
         if ref:
             st.caption(f"📝 {ref}")
         st.caption(f"Rekening: {tx.get('rekening', '')}")
+        eigen_iban = str(tx.get("rekening") or "").strip()
+        tegen_iban = str(tx.get("iban") or "").strip()
+        if bedrag < 0:
+            van_iban = eigen_iban or "—"
+            naar_iban = tegen_iban or "—"
+        else:
+            van_iban = tegen_iban or "—"
+            naar_iban = eigen_iban or "—"
+        st.caption(f"Van IBAN: {van_iban}")
+        st.caption(f"Naar IBAN: {naar_iban}")
         current_idx = PRIVE_CATS.index(cat) if cat in PRIVE_CATS else 0
         st.selectbox(
             "Categorie", PRIVE_CATS, index=current_idx,
@@ -163,9 +213,8 @@ for _, tx in page_df.iterrows():
         st.checkbox(
             "🔄 Vaste last (terugkerende betaling)", value=recurring,
             key=f"rec_{tx_id}",
-            on_change=lambda tid=tx_id: set_prive_recurring(
-                tid, st.session_state.get(f"rec_{tid}", False)
-            ),
+            on_change=_on_rec_change,
+            args=(tx_id, str(tx["naam"])),
         )
 
 if not cat_df.empty:
