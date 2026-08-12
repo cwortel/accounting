@@ -169,15 +169,20 @@ if "id" in exp_df.columns and not exp_display_full.empty:
         lambda eid: _format_bankboeking(bank_info_by_expense_id.get(int(eid))) if pd.notna(eid) else ""
     )
 
-col_fn, col_fc = st.columns([2, 2])
+col_fn, col_fc, col_fs = st.columns([2, 2, 1])
 filter_naam = col_fn.text_input("Filter op naam", key="exp_naam_filter", placeholder="Type om te filteren…")
 filter_cat  = col_fc.selectbox("Filter op categorie", ["Alle"] + categories, key="exp_cat_filter")
+filter_status = col_fs.selectbox("Afgerekend", ["Alle", "Afgerekend", "Niet Afgerekend"], key="exp_status_filter")
 
 exp_display = exp_display_full.copy()
 if filter_naam:
     exp_display = exp_display[exp_display["naam"].str.contains(filter_naam, case=False, na=False)]
 if filter_cat != "Alle":
     exp_display = exp_display[exp_display["categorie"] == filter_cat]
+if filter_status == "Afgerekend":
+    exp_display = exp_display[exp_display["afgerekend"] == True]
+elif filter_status == "Niet Afgerekend":
+    exp_display = exp_display[exp_display["afgerekend"] == False]
 exp_display = exp_display.copy()
 exp_display = exp_display.set_index("id", drop=True)
 
@@ -201,7 +206,7 @@ exp_edited = st.data_editor(
     exp_display, column_config=exp_col_cfg,
     num_rows="dynamic", use_container_width=True, hide_index=True,
     disabled=["ex_btw", "btw", "bankboeking"],
-    key=f"exp_{jaar}_{kw_label}_{filter_naam}_{filter_cat}",
+    key=f"exp_{jaar}_{kw_label}_{filter_naam}_{filter_cat}_{filter_status}",
 )
 _totals_row(exp_edited, ["total", "ex_btw", "btw"], exp_cols + ["bankboeking"], exp_col_cfg, label_col="naam")
 
@@ -257,11 +262,14 @@ if st.button("💾 Uitgaven opslaan", type="primary", key="save_exp"):
     exp_to_save.loc[linked_mask, "afgerekend"] = True
     exp_to_save.loc[linked_mask, "betaal_bron"] = "Bank zakelijk"
 
-    filter_active = bool(filter_naam) or filter_cat != "Alle"
+    filter_active = bool(filter_naam) or filter_cat != "Alle" or filter_status != "Alle"
     if filter_active and visible_ids:
         fresh = get_expenses(jaar, kw_num)
         unchanged = fresh[~fresh["id"].isin(visible_ids)]
-        final = pd.concat([unchanged[["id"] + exp_cols], exp_to_save[["id"] + exp_cols]], ignore_index=True)
+        final = pd.concat([
+            unchanged[["id"] + exp_cols],
+            exp_to_save[["id"] + exp_cols],
+        ], ignore_index=True)
     else:
         final = exp_to_save[["id"] + exp_cols]
     final["kwartaal"] = final["datum"].apply(_derive_kwartaal)

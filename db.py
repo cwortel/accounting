@@ -81,7 +81,6 @@ def init_db() -> None:
         """)
         for col, definition in [
             ("betaal_bron", "TEXT NOT NULL DEFAULT ''"),
-            ("betaal_bron_notitie", "TEXT NOT NULL DEFAULT ''"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE expenses ADD COLUMN {col} {definition}")
@@ -185,17 +184,14 @@ def get_expenses(jaar: int, kwartaal: int = None) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=[
             "id", "factuur", "naam", "datum", "categorie",
-            "btw_pct", "btw", "ex_btw", "total", "afgerekend", "betaal_bron", "betaal_bron_notitie", "jaar", "kwartaal",
+            "btw_pct", "btw", "ex_btw", "total", "afgerekend", "betaal_bron", "jaar", "kwartaal",
         ])
     if "betaal_bron" not in df.columns:
         df["betaal_bron"] = ""
-    if "betaal_bron_notitie" not in df.columns:
-        df["betaal_bron_notitie"] = ""
     df["datum"] = df["datum"].apply(_to_date)
     df["afgerekend"] = df["afgerekend"].astype(bool)
     df["btw_pct"] = df["btw_pct"].astype(int)
     df["betaal_bron"] = df["betaal_bron"].fillna("")
-    df["betaal_bron_notitie"] = df["betaal_bron_notitie"].fillna("")
     return df
 
 
@@ -229,13 +225,6 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
             btw = round(total - ex_btw, 2)
             row_q = _safe_int(row.get("kwartaal"), kwartaal or 1)
             row_id = _safe_int(row.get("id"), 0)
-            note_val = row.get("betaal_bron_notitie", None)
-            if note_val is None and row_id and row_id in existing_ids:
-                prev = conn.execute(
-                    "SELECT betaal_bron_notitie FROM expenses WHERE id=?",
-                    (row_id,),
-                ).fetchone()
-                note_val = prev[0] if prev else ""
             vals = (
                 factuur,
                 naam,
@@ -247,14 +236,13 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
                 total,
                 _safe_bool(row.get("afgerekend")),
                 str(row.get("betaal_bron") or ""),
-                str(note_val or ""),
                 jaar,
                 row_q,
             )
             if row_id and row_id in existing_ids:
                 conn.execute(
                     "UPDATE expenses SET factuur=?, naam=?, datum=?, categorie=?, "
-                    "btw_pct=?, btw=?, ex_btw=?, total=?, afgerekend=?, betaal_bron=?, betaal_bron_notitie=?, jaar=?, kwartaal=? "
+                    "btw_pct=?, btw=?, ex_btw=?, total=?, afgerekend=?, betaal_bron=?, jaar=?, kwartaal=? "
                     "WHERE id=?",
                     vals + (row_id,),
                 )
@@ -262,8 +250,8 @@ def save_expenses(df: pd.DataFrame, jaar: int, kwartaal: int = None) -> None:
             else:
                 cur = conn.execute(
                     "INSERT INTO expenses "
-                    "(factuur,naam,datum,categorie,btw_pct,btw,ex_btw,total,afgerekend,betaal_bron,betaal_bron_notitie,jaar,kwartaal) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "(factuur,naam,datum,categorie,btw_pct,btw,ex_btw,total,afgerekend,betaal_bron,jaar,kwartaal) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     vals,
                 )
                 seen_ids.add(int(cur.lastrowid))
@@ -837,8 +825,8 @@ def create_expense_from_bank_transaction(
 
         cur = conn.execute(
             "INSERT INTO expenses "
-            "(factuur, naam, datum, categorie, btw_pct, btw, ex_btw, total, afgerekend, betaal_bron, betaal_bron_notitie, jaar, kwartaal) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(factuur, naam, datum, categorie, btw_pct, btw, ex_btw, total, afgerekend, betaal_bron, jaar, kwartaal) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 str(factuur or "").strip(),
                 exp_naam,
@@ -850,7 +838,6 @@ def create_expense_from_bank_transaction(
                 total,
                 1,
                 "Bank zakelijk",
-                str(notitie or "").strip(),
                 int(tx["jaar"]),
                 int(tx["kwartaal"]),
             ),
