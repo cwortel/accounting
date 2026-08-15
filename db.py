@@ -11,7 +11,7 @@ DEFAULT_CATEGORIES = [
     "Office",
     "Representation",
     "Travel",
-    "Other",
+    "Taxes",
 ]
 
 
@@ -456,9 +456,12 @@ def _init_bank_table(conn: sqlite3.Connection) -> None:
         ("machtigingskenmerk", "TEXT NOT NULL DEFAULT ''"),
         ("incassant_id",       "TEXT NOT NULL DEFAULT ''"),
         ("prive_categorie",    "TEXT NOT NULL DEFAULT ''"),
-        ("is_recurring",       "INTEGER NOT NULL DEFAULT 0"),
-        ("intern",             "INTEGER NOT NULL DEFAULT 0"),
-        ("intern_omschrijving","TEXT NOT NULL DEFAULT ''"),
+        ("is_recurring",        "INTEGER NOT NULL DEFAULT 0"),
+        ("intern",              "INTEGER NOT NULL DEFAULT 0"),
+        ("intern_omschrijving", "TEXT NOT NULL DEFAULT ''"),
+        ("btw_betaling",        "INTEGER NOT NULL DEFAULT 0"),
+        ("btw_betaling_jaar",   "INTEGER"),
+        ("btw_betaling_kwartaal", "INTEGER"),
     ]:
         try:
             conn.execute(f"ALTER TABLE bank_transactions ADD COLUMN {col} {definition}")
@@ -768,7 +771,7 @@ def get_bank_transactions(jaar: int, kwartaal: int = None,
         sql += " AND kwartaal=?"
         params.append(kwartaal)
     if only_unmatched:
-        sql += " AND expense_id IS NULL AND income_id IS NULL AND prive=0 AND intern=0"
+        sql += " AND expense_id IS NULL AND income_id IS NULL AND prive=0 AND intern=0 AND btw_betaling=0"
     if rekening:
         sql += " AND rekening=?"
         params.append(rekening)
@@ -831,7 +834,7 @@ def create_expense_from_bank_transaction(
                 str(factuur or "").strip(),
                 exp_naam,
                 _date_str(tx["datum"]),
-                str(categorie or "Other").strip(),
+                str(categorie or "Taxes").strip(),
                 pct,
                 btw,
                 ex_btw,
@@ -871,11 +874,43 @@ def mark_bank_as_intern(tx_id: int, omschrijving: str = "") -> None:
         conn.commit()
 
 
+def mark_bank_as_btw_betaling(tx_id: int, jaar: int, kwartaal: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE bank_transactions SET btw_betaling=1, btw_betaling_jaar=?, btw_betaling_kwartaal=?, "
+            "expense_id=NULL, income_id=NULL, fooi=0, prive=0, prive_omschrijving='', "
+            "intern=0, intern_omschrijving='' WHERE id=?",
+            (jaar, kwartaal, tx_id),
+        )
+        conn.commit()
+
+
+def get_btw_betalingen(jaar: int) -> dict:
+    """Return {kwartaal: {tx_id, datum, bedrag}} for BTW payments in the given year."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, datum, bedrag, btw_betaling_kwartaal FROM bank_transactions "
+            "WHERE btw_betaling=1 AND btw_betaling_jaar=?",
+            (jaar,),
+        ).fetchall()
+    result = {}
+    for row in rows:
+        kw = int(row["btw_betaling_kwartaal"] or 0)
+        if kw:
+            result[kw] = {
+                "tx_id": int(row["id"]),
+                "datum": str(row["datum"]),
+                "bedrag": abs(float(row["bedrag"] or 0)),
+            }
+    return result
+
+
 def unlink_bank_transaction(tx_id: int) -> None:
     with get_connection() as conn:
         conn.execute(
             "UPDATE bank_transactions SET expense_id=NULL, income_id=NULL, fooi=0, "
-            "prive=0, prive_omschrijving='', intern=0, intern_omschrijving='' WHERE id=?",
+            "prive=0, prive_omschrijving='', intern=0, intern_omschrijving='', "
+            "btw_betaling=0, btw_betaling_jaar=NULL, btw_betaling_kwartaal=NULL WHERE id=?",
             (tx_id,),
         )
         conn.commit()

@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 from db import (
     init_db, get_yearly_summary, get_btw_by_quarter,
-    get_expense_by_category_quarter,
+    get_expense_by_category_quarter, get_btw_betalingen,
 )
 
 st.set_page_config(
@@ -76,6 +77,7 @@ st.dataframe(
 )
 
 st.subheader("Per kwartaal — aangifte detail")
+btw_betalingen = get_btw_betalingen(jaar)
 for q in range(1, 5):
     row = combined_df[combined_df["Kwartaal"] == f"Q{q}"]
     if row.empty:
@@ -107,6 +109,12 @@ for q in range(1, 5):
                 st.success(f"Terug te vragen: € {abs(saldo):,.2f}")
             else:
                 st.info("Saldo: € 0,00")
+            payment = btw_betalingen.get(q)
+            if saldo != 0:
+                if payment:
+                    st.success(f"✅ Betaald op {payment['datum']} — € {payment['bedrag']:,.2f}")
+                elif saldo > 0:
+                    st.warning("⚠️ Nog niet betaald")
 
 st.divider()
 
@@ -133,6 +141,16 @@ if not cat_q.empty:
             )
     if mismatches:
         st.warning("⚠️ Som van categorieën klopt niet met totale kosten:\n\n" + "\n\n".join(mismatches))
+
+    chart_data = cat_q[["Categorie", "Totaal"]].sort_values("Totaal", ascending=False)
+    cat_order = chart_data["Categorie"].tolist()
+    bars = alt.Chart(chart_data).mark_bar(color="#1D4ED8").encode(
+        x=alt.X("Totaal:Q", title="Bedrag (ex BTW)"),
+        y=alt.Y("Categorie:N", sort=cat_order, title=None),
+        tooltip=[alt.Tooltip("Categorie:N"), alt.Tooltip("Totaal:Q", format=",.2f", title="€")],
+    )
+    labels = bars.mark_text(align="left", dx=4).encode(text=alt.Text("Totaal:Q", format=",.0f"))
+    st.altair_chart(bars + labels, use_container_width=True)
 
     cat_totals = {c: cat_q[c].sum() for c in money_cat}
     cat_totals["Categorie"] = "Totaal"

@@ -4,8 +4,8 @@ from pathlib import Path
 from db import (
     init_db, import_camt, import_rabobank_csv, get_bank_transactions,
     get_expenses, get_income, link_bank_transaction, unlink_bank_transaction,
-    mark_bank_as_prive, mark_bank_as_intern, get_rekeningen, get_categories,
-    create_expense_from_bank_transaction,
+    mark_bank_as_prive, mark_bank_as_intern, mark_bank_as_btw_betaling,
+    get_rekeningen, get_categories, create_expense_from_bank_transaction,
 )
 
 st.set_page_config(page_title="Zakelijke Transacties", page_icon="🏦", layout="wide")
@@ -160,6 +160,11 @@ jaar = st.sidebar.selectbox("Jaar", [2026, 2025, 2024], key="jaar")
 kw_label = st.sidebar.selectbox("Kwartaal", ["Alle", "Q1", "Q2", "Q3", "Q4"])
 kw_num = None if kw_label == "Alle" else int(kw_label[1])
 only_unmatched = st.sidebar.checkbox("Alleen ongekoppeld", value=False)
+naam_filter = st.sidebar.text_input("🔍 Filter op naam", "").strip().lower()
+cat_filter = st.sidebar.selectbox(
+    "Categorie",
+    ["Alle", "Uitgave", "Inkomst", "Interne overboeking", "Privé onttrekking", "BTW betaling", "Ongekoppeld"],
+)
 
 # Always filter to business accounts only
 BETALINGS_IBAN = "NL84RABO0188971130"
@@ -196,6 +201,26 @@ st.divider()
 df = get_bank_transactions(jaar, kw_num, only_unmatched)
 df = df[df["rekening"].isin(ZAKELIJK_IBANS)] if not df.empty else df
 
+if not df.empty and naam_filter:
+    df = df[df["naam"].str.lower().str.contains(naam_filter, na=False)]
+
+if not df.empty and cat_filter != "Alle":
+    intern_col = df["intern"].astype(bool) if "intern" in df.columns else pd.Series(False, index=df.index)
+    prive_col = df["prive"].astype(bool) if "prive" in df.columns else pd.Series(False, index=df.index)
+    btw_col = df["btw_betaling"].astype(bool) if "btw_betaling" in df.columns else pd.Series(False, index=df.index)
+    if cat_filter == "Uitgave":
+        df = df[df["expense_id"].notna()]
+    elif cat_filter == "Inkomst":
+        df = df[df["income_id"].notna()]
+    elif cat_filter == "Interne overboeking":
+        df = df[intern_col]
+    elif cat_filter == "Privé onttrekking":
+        df = df[prive_col]
+    elif cat_filter == "BTW betaling":
+        df = df[btw_col]
+    elif cat_filter == "Ongekoppeld":
+        df = df[df["expense_id"].isna() & df["income_id"].isna() & ~intern_col & ~prive_col & ~btw_col]
+
 if df.empty:
     st.info("Geen transacties gevonden. Importeer eerst een CAMT.053 bestand.")
     st.stop()
@@ -203,18 +228,21 @@ if df.empty:
 matched = df["expense_id"].notna() | df["income_id"].notna()
 is_prive = df.get("prive", pd.Series(0, index=df.index)).astype(bool)
 is_intern = df.get("intern", pd.Series(0, index=df.index)).astype(bool)
+is_btw = df.get("btw_betaling", pd.Series(0, index=df.index)).astype(bool)
 n_matched = matched.sum()
 n_prive = is_prive.sum()
 n_intern = is_intern.sum()
+n_btw = is_btw.sum()
 n_total = len(df)
 df_betaal = df[df["rekening"] == BETALINGS_IBAN].copy()
 df_spaar = df[df["rekening"] == SPAAR_IBAN].copy()
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Transacties", n_total)
 c2.metric("Gekoppeld", int(n_matched))
 c3.metric("Privé onttrekking", int(n_prive))
 c4.metric("Intern", int(n_intern))
-c5.metric("Betaal/Spaar", f"{len(df_betaal)}/{len(df_spaar)}")
+c5.metric("BTW betaling", int(n_btw))
+c6.metric("Betaal/Spaar", f"{len(df_betaal)}/{len(df_spaar)}")
 
 st.divider()
 
@@ -239,6 +267,9 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
         is_matched = pd.notna(tx.get("expense_id")) or pd.notna(tx.get("income_id"))
         is_prive_tx = bool(tx.get("prive"))
         is_intern_tx = bool(tx.get("intern"))
+        is_btw_tx = bool(tx.get("btw_betaling"))
+        btw_tx_jaar = int(tx["btw_betaling_jaar"]) if pd.notna(tx.get("btw_betaling_jaar")) else 0
+        btw_tx_kw = int(tx["btw_betaling_kwartaal"]) if pd.notna(tx.get("btw_betaling_kwartaal")) else 0
         bedrag = tx["bedrag"]
         bedrag_str = f"€ {bedrag:+,.2f}"
 
@@ -246,6 +277,8 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
             col_status = "🔄"
         elif is_prive_tx:
             col_status = "🟡"
+        elif is_btw_tx:
+            col_status = "📘"
         elif is_matched:
             col_status = "🟢"
         elif bedrag < 0:
@@ -257,6 +290,8 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
             label += f"  *(intern: {tx['intern_omschrijving']})*"
         elif is_prive_tx and tx.get("prive_omschrijving"):
             label += f"  *(privé: {tx['prive_omschrijving']})*"
+        elif is_btw_tx:
+            label += f"  *(BTW betaling Q{btw_tx_kw} {btw_tx_jaar})*"
         elif tx.get("fooi") and tx["fooi"] != 0:
             label += f"  *(fooi: € {tx['fooi']:.2f})*"
 
@@ -289,6 +324,11 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
                     if st.button("\U0001f513 Ontkoppelen", key=f"unlink_{key_base}"):
                         unlink_bank_transaction(tx_id)
                         st.rerun()
+                elif is_btw_tx:
+                    st.info(f"📘 BTW betaling: **Q{btw_tx_kw} {btw_tx_jaar}** (€ {abs(bedrag):,.2f})")
+                    if st.button("🔓 Ontkoppelen", key=f"unlink_{key_base}"):
+                        unlink_bank_transaction(tx_id)
+                        st.rerun()
                 elif is_matched:
                     if pd.notna(tx.get("expense_id")):
                         matched_row = all_exp[all_exp["id"] == tx["expense_id"]]
@@ -309,10 +349,11 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
                     # Matching form
                     st.markdown("**Koppel aan:**")
                     default_type = "Inkomst" if bedrag > 0 else "Uitgave"
+                    _MATCH_TYPES = ["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking", "BTW betaling"]
                     match_type = st.radio(
                         "Type",
-                        ["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"],
-                        index=["Uitgave", "Inkomst", "Privé onttrekking", "Interne overboeking"].index(default_type),
+                        _MATCH_TYPES,
+                        index=_MATCH_TYPES.index(default_type),
                         key=f"type_{key_base}",
                         horizontal=True,
                     )
@@ -327,6 +368,16 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
                         )
                         if st.button("🔄 Markeer als Intern", key=f"intern_{key_base}", type="primary"):
                             mark_bank_as_intern(tx_id, omschr)
+                            st.rerun()
+
+                    elif match_type == "BTW betaling":
+                        st.caption(f"Markeer deze betaling (€ {abs(bedrag):,.2f}) als voldoening van de BTW aangifte.")
+                        btw_jaar_sel = st.selectbox("Jaar", [2026, 2025, 2024], key=f"btw_jaar_{key_base}")
+                        btw_kw_sel = st.selectbox("Kwartaal", [1, 2, 3, 4],
+                                                   format_func=lambda x: f"Q{x}",
+                                                   key=f"btw_kw_{key_base}")
+                        if st.button("📘 Markeer als BTW betaling", key=f"btw_{key_base}", type="primary"):
+                            mark_bank_as_btw_betaling(tx_id, btw_jaar_sel, btw_kw_sel)
                             st.rerun()
 
                     elif match_type == "Privé onttrekking":
