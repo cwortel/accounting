@@ -904,6 +904,29 @@ def get_btw_betalingen(jaar: int) -> dict:
     return result
 
 
+def get_setting(key: str, default: str = "") -> str:
+    with get_connection() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings "
+            "(key TEXT NOT NULL UNIQUE, value TEXT NOT NULL DEFAULT '')"
+        )
+        row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings "
+            "(key TEXT NOT NULL UNIQUE, value TEXT NOT NULL DEFAULT '')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?,?)",
+            (key, str(value)),
+        )
+        conn.commit()
+
+
 def unlink_bank_transaction(tx_id: int) -> None:
     with get_connection() as conn:
         conn.execute(
