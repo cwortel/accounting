@@ -335,13 +335,15 @@ def _render_transaction_rows(df_rows: pd.DataFrame, key_prefix: str) -> None:
                         if not matched_row.empty:
                             r = matched_row.iloc[0]
                             factuur = str(r.get("factuur") or "").strip()
-                            suffix = f" - {factuur}" if factuur else ""
-                            st.success(f"Gekoppeld aan uitgave: **{r['naam']}** (€ {r['total']:.2f}){suffix}")
+                            factuur_str = f" · {factuur}" if factuur else ""
+                            st.success(f"Gekoppeld aan uitgave: **{r['naam']}** · {r['datum']}{factuur_str} · € {r['total']:.2f}")
                     if pd.notna(tx.get("income_id")):
                         matched_row = all_inc[all_inc["id"] == tx["income_id"]]
                         if not matched_row.empty:
                             r = matched_row.iloc[0]
-                            st.success(f"Gekoppeld aan inkomst: **{r['naam']}** (€ {r['total']:.2f})")
+                            factuur = str(r.get("factuur") or "").strip()
+                            factuur_str = f" · {factuur}" if factuur else ""
+                            st.success(f"Gekoppeld aan inkomst: **{r['naam']}** · {r['datum']}{factuur_str} · € {r['total']:.2f}")
                     if st.button("🔓 Ontkoppelen", key=f"unlink_{key_base}"):
                         unlink_bank_transaction(tx_id)
                         st.rerun()
@@ -513,32 +515,3 @@ if not df_spaar.empty:
     with st.expander(f"💾 Spaarrekening transacties ({len(df_spaar)})", expanded=False):
         st.caption("Minder relevant voor dagelijkse matching; meestal de spiegeling van de betaalrekening.")
         _render_transaction_rows(df_spaar, "spaar")
-
-# ── Ongeboekt overzicht ───────────────────────────────────────────────────────
-
-all_df_full = get_bank_transactions(jaar, kw_num)
-all_df_full = all_df_full[all_df_full["rekening"] == BETALINGS_IBAN] if not all_df_full.empty else all_df_full
-
-if not all_df_full.empty:
-    ongeboekt = all_df_full[
-        all_df_full["expense_id"].isna() &
-        all_df_full["income_id"].isna() &
-        (all_df_full.get("prive", 0) == 0) &
-        (all_df_full.get("intern", 0) == 0)
-    ]
-    if not ongeboekt.empty:
-        st.divider()
-        with st.expander(f"⚠️ Ongeboekt / Niet geïdentificeerd  ({len(ongeboekt)} transacties)", expanded=False):
-            st.caption("Transacties zonder koppeling aan uitgave, inkomst, privé of intern.")
-            st.dataframe(
-                ongeboekt[["datum", "naam", "bedrag", "referentie", "rekening"]].rename(columns={
-                    "datum": "Datum", "naam": "Naam", "bedrag": "Bedrag",
-                    "referentie": "Omschrijving", "rekening": "Rekening",
-                }),
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Datum":  st.column_config.DateColumn(format="DD-MM-YYYY"),
-                    "Bedrag": st.column_config.NumberColumn(format="€ %.2f"),
-                },
-            )

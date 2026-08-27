@@ -109,7 +109,7 @@ inc_display = inc_display.set_index("id", drop=True)
 
 inc_col_cfg = {
     "factuur":  st.column_config.TextColumn(     "Factuur", width="small"),
-    "naam":     st.column_config.TextColumn(     "Klant",   width="medium"),
+    "naam":     st.column_config.TextColumn(     "Naam",    width="medium"),
     "datum":    st.column_config.DateColumn(     "Datum",   format="DD-MM-YYYY",  width="small"),
     "project":  st.column_config.TextColumn(     "Project", width="medium"),
     "btw_pct":  st.column_config.SelectboxColumn("BTW %",   options=[0, 9, 21],   width="small"),

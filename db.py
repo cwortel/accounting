@@ -11,7 +11,6 @@ DEFAULT_CATEGORIES = [
     "Office",
     "Representation",
     "Travel",
-    "Taxes",
 ]
 
 
@@ -107,7 +106,7 @@ def get_categories() -> list:
         rows = conn.execute("""
             SELECT naam FROM categories
             UNION
-            SELECT DISTINCT categorie FROM expenses WHERE categorie != ''
+            SELECT DISTINCT categorie FROM expenses WHERE categorie != '' AND categorie != 'Taxes'
             ORDER BY naam
         """).fetchall()
     return [r[0] for r in rows]
@@ -367,7 +366,7 @@ def get_yearly_summary(jaar: int) -> pd.DataFrame:
         )
         exp = pd.read_sql_query(
             "SELECT kwartaal, SUM(ex_btw) as kosten, SUM(btw) as btw_uit "
-            "FROM expenses WHERE jaar=? GROUP BY kwartaal",
+            "FROM expenses WHERE jaar=? AND categorie != 'Taxes' GROUP BY kwartaal",
             conn, params=[jaar],
         )
     base = pd.DataFrame({"kwartaal": [1, 2, 3, 4]})
@@ -391,7 +390,7 @@ def get_expense_by_category_quarter(jaar: int) -> pd.DataFrame:
     with get_connection() as conn:
         df = pd.read_sql_query(
             "SELECT categorie, kwartaal, SUM(ex_btw) as totaal FROM expenses "
-            "WHERE jaar=? GROUP BY categorie, kwartaal",
+            "WHERE jaar=? AND categorie != 'Taxes' GROUP BY categorie, kwartaal",
             conn, params=[jaar],
         )
     if df.empty:
@@ -1004,7 +1003,7 @@ def get_btw_by_quarter(jaar: int):
         )
         exp = pd.read_sql_query(
             "SELECT kwartaal, SUM(btw) as aftrekbare_btw "
-            "FROM expenses WHERE jaar=? GROUP BY kwartaal",
+            "FROM expenses WHERE jaar=? AND categorie != 'Taxes' GROUP BY kwartaal",
             conn, params=[jaar],
         )
     return inc, exp
