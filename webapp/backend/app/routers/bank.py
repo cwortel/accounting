@@ -41,7 +41,18 @@ def list_bank_transactions(
         zakelijk_ibans = select(models.Rekening.iban).where(models.Rekening.type == rekening_type)
         stmt = stmt.where(models.BankTransaction.rekening.in_(zakelijk_ibans))
     stmt = stmt.order_by(models.BankTransaction.datum, models.BankTransaction.id)
-    return db.execute(stmt).scalars().all()
+    transactions = db.execute(stmt).scalars().all()
+
+    expense_ids = [t.expense_id for t in transactions if t.expense_id is not None]
+    income_ids = [t.income_id for t in transactions if t.income_id is not None]
+    expenses_by_id = {e.id: e for e in db.execute(select(models.Expense).where(models.Expense.id.in_(expense_ids))).scalars()}
+    income_by_id = {i.id: i for i in db.execute(select(models.Income).where(models.Income.id.in_(income_ids))).scalars()}
+    for tx in transactions:
+        expense = expenses_by_id.get(tx.expense_id) if tx.expense_id is not None else None
+        income = income_by_id.get(tx.income_id) if tx.income_id is not None else None
+        tx.linked_expense = schemas.ExpenseSummary.model_validate(expense) if expense else None
+        tx.linked_income = schemas.IncomeSummary.model_validate(income) if income else None
+    return transactions
 
 
 @router.post("/import/camt", response_model=schemas.ImportResult)
@@ -99,9 +110,23 @@ def _get_tx(db: Session, tx_id: int) -> models.BankTransaction:
     return tx
 
 
+def _sync_income_betaald(db: Session, income_id: int | None) -> None:
+    """Keep Income.betaald in sync with whether any bank transaction is linked to it."""
+    if income_id is None:
+        return
+    income = db.get(models.Income, income_id)
+    if not income:
+        return
+    still_linked = db.execute(
+        select(models.BankTransaction.id).where(models.BankTransaction.income_id == income_id)
+    ).first()
+    income.betaald = still_linked is not None
+
+
 @router.post("/{tx_id}/link", response_model=schemas.BankTransaction)
 def link_bank_transaction(tx_id: int, payload: schemas.LinkBankTransaction, db: Session = Depends(get_db)):
     tx = _get_tx(db, tx_id)
+    previous_income_id = tx.income_id
     tx.expense_id = payload.expense_id
     tx.income_id = payload.income_id
     tx.fooi = round(payload.fooi, 2)
@@ -112,6 +137,9 @@ def link_bank_transaction(tx_id: int, payload: schemas.LinkBankTransaction, db: 
         if expense:
             expense.afgerekend = True
             expense.betaal_bron = "Bank zakelijk"
+    db.flush()
+    _sync_income_betaald(db, previous_income_id)
+    _sync_income_betaald(db, payload.income_id)
     db.commit()
     db.refresh(tx)
     return tx
@@ -120,6 +148,7 @@ def link_bank_transaction(tx_id: int, payload: schemas.LinkBankTransaction, db: 
 @router.post("/{tx_id}/unlink", response_model=schemas.BankTransaction)
 def unlink_bank_transaction(tx_id: int, db: Session = Depends(get_db)):
     tx = _get_tx(db, tx_id)
+    previous_income_id = tx.income_id
     tx.expense_id = None
     tx.income_id = None
     tx.fooi = 0
@@ -130,6 +159,8 @@ def unlink_bank_transaction(tx_id: int, db: Session = Depends(get_db)):
     tx.btw_betaling = False
     tx.btw_betaling_jaar = None
     tx.btw_betaling_kwartaal = None
+    db.flush()
+    _sync_income_betaald(db, previous_income_id)
     db.commit()
     db.refresh(tx)
     return tx
@@ -138,6 +169,7 @@ def unlink_bank_transaction(tx_id: int, db: Session = Depends(get_db)):
 @router.post("/{tx_id}/mark-prive", response_model=schemas.BankTransaction)
 def mark_prive(tx_id: int, payload: schemas.MarkPrive, db: Session = Depends(get_db)):
     tx = _get_tx(db, tx_id)
+    previous_income_id = tx.income_id
     tx.prive = True
     tx.prive_omschrijving = payload.omschrijving.strip()
     tx.expense_id = None
@@ -145,6 +177,8 @@ def mark_prive(tx_id: int, payload: schemas.MarkPrive, db: Session = Depends(get
     tx.fooi = 0
     tx.intern = False
     tx.intern_omschrijving = ""
+    db.flush()
+    _sync_income_betaald(db, previous_income_id)
     db.commit()
     db.refresh(tx)
     return tx
@@ -153,6 +187,7 @@ def mark_prive(tx_id: int, payload: schemas.MarkPrive, db: Session = Depends(get
 @router.post("/{tx_id}/mark-intern", response_model=schemas.BankTransaction)
 def mark_intern(tx_id: int, payload: schemas.MarkIntern, db: Session = Depends(get_db)):
     tx = _get_tx(db, tx_id)
+    previous_income_id = tx.income_id
     tx.intern = True
     tx.intern_omschrijving = payload.omschrijving.strip()
     tx.expense_id = None
@@ -160,6 +195,8 @@ def mark_intern(tx_id: int, payload: schemas.MarkIntern, db: Session = Depends(g
     tx.fooi = 0
     tx.prive = False
     tx.prive_omschrijving = ""
+    db.flush()
+    _sync_income_betaald(db, previous_income_id)
     db.commit()
     db.refresh(tx)
     return tx
@@ -168,6 +205,7 @@ def mark_intern(tx_id: int, payload: schemas.MarkIntern, db: Session = Depends(g
 @router.post("/{tx_id}/mark-btw-betaling", response_model=schemas.BankTransaction)
 def mark_btw_betaling(tx_id: int, payload: schemas.MarkBtwBetaling, db: Session = Depends(get_db)):
     tx = _get_tx(db, tx_id)
+    previous_income_id = tx.income_id
     tx.btw_betaling = True
     tx.btw_betaling_jaar = payload.jaar
     tx.btw_betaling_kwartaal = payload.kwartaal
@@ -178,6 +216,8 @@ def mark_btw_betaling(tx_id: int, payload: schemas.MarkBtwBetaling, db: Session 
     tx.prive_omschrijving = ""
     tx.intern = False
     tx.intern_omschrijving = ""
+    db.flush()
+    _sync_income_betaald(db, previous_income_id)
     db.commit()
     db.refresh(tx)
     return tx

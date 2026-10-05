@@ -42,6 +42,7 @@ export type Expense = {
   betaal_bron: string;
   jaar: number;
   kwartaal: number;
+  linked_transaction: BankTxSummary | null;
 };
 
 export type Income = {
@@ -57,6 +58,31 @@ export type Income = {
   betaald: boolean;
   jaar: number;
   kwartaal: number;
+  linked_transaction: BankTxSummary | null;
+};
+
+export type BankTxSummary = {
+  id: number;
+  datum: string | null;
+  bedrag: number;
+  naam: string;
+  referentie: string;
+};
+
+export type ExpenseSummary = {
+  id: number;
+  naam: string;
+  datum: string | null;
+  total: number;
+  factuur: string;
+};
+
+export type IncomeSummary = {
+  id: number;
+  naam: string;
+  datum: string | null;
+  total: number;
+  factuur: string;
 };
 
 export type BankTransaction = {
@@ -79,6 +105,8 @@ export type BankTransaction = {
   intern: boolean;
   intern_omschrijving: string;
   btw_betaling: boolean;
+  linked_expense: ExpenseSummary | null;
+  linked_income: IncomeSummary | null;
 };
 
 export type Rekening = {
@@ -127,6 +155,15 @@ export type IncomeMatchCandidate = {
   score: number;
 };
 
+export type BankTxMatchCandidate = {
+  tx_id: number;
+  naam: string;
+  datum: string | null;
+  bedrag: number;
+  referentie: string;
+  score: number;
+};
+
 export type ImportResult = {
   bestand: string;
   aantal_toegevoegd: number;
@@ -171,6 +208,8 @@ export const api = {
     update: (id: number, data: Partial<Expense>) =>
       request<Expense>(`/expenses/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     remove: (id: number) => request<void>(`/expenses/${id}`, { method: "DELETE" }),
+    bankMatchCandidates: (expenseId: number) =>
+      request<BankTxMatchCandidate[]>(`/expenses/${expenseId}/bank-match-candidates`),
   },
   income: {
     list: (jaar: number, kwartaal?: number) =>
@@ -180,6 +219,8 @@ export const api = {
     update: (id: number, data: Partial<Income>) =>
       request<Income>(`/income/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     remove: (id: number) => request<void>(`/income/${id}`, { method: "DELETE" }),
+    bankMatchCandidates: (incomeId: number) =>
+      request<BankTxMatchCandidate[]>(`/income/${incomeId}/bank-match-candidates`),
   },
   categories: {
     list: () => request<string[]>("/categories"),

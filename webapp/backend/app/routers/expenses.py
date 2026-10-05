@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date as _date
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import require_api_key
+from ..services import matching
 
 router = APIRouter(prefix="/expenses", tags=["expenses"], dependencies=[Depends(require_api_key)])
 
@@ -17,7 +18,7 @@ def _compute_btw(total: float, btw_pct: int) -> tuple[float, float]:
     return ex_btw, btw
 
 
-def _derive_kwartaal(datum: date | None, fallback: int) -> int:
+def _derive_kwartaal(datum: _date | None, fallback: int) -> int:
     if datum is None:
         return fallback
     return (datum.month - 1) // 3 + 1
@@ -29,7 +30,59 @@ def list_expenses(jaar: int, kwartaal: int | None = None, db: Session = Depends(
     if kwartaal:
         stmt = stmt.where(models.Expense.kwartaal == kwartaal)
     stmt = stmt.order_by(models.Expense.datum, models.Expense.factuur)
-    return db.execute(stmt).scalars().all()
+    expenses = db.execute(stmt).scalars().all()
+
+    tx_by_expense = {
+        tx.expense_id: tx
+        for tx in db.execute(
+            select(models.BankTransaction).where(
+                models.BankTransaction.expense_id.in_([e.id for e in expenses])
+            )
+        ).scalars()
+    }
+    for expense in expenses:
+        tx = tx_by_expense.get(expense.id)
+        expense.linked_transaction = schemas.BankTxSummary.model_validate(tx) if tx else None
+    return expenses
+
+
+@router.get("/{expense_id}/bank-match-candidates", response_model=list[schemas.BankTxMatchCandidate])
+def expense_bank_match_candidates(expense_id: int, db: Session = Depends(get_db)):
+    expense = db.get(models.Expense, expense_id)
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    candidates = db.execute(
+        select(models.BankTransaction).where(
+            models.BankTransaction.jaar == expense.jaar,
+            models.BankTransaction.bedrag < 0,
+            models.BankTransaction.expense_id.is_(None),
+            models.BankTransaction.income_id.is_(None),
+            models.BankTransaction.prive.is_(False),
+            models.BankTransaction.intern.is_(False),
+            models.BankTransaction.btw_betaling.is_(False),
+        )
+    ).scalars()
+
+    scored = []
+    for tx in candidates:
+        tx_datum = tx.datum if isinstance(tx.datum, str) else str(tx.datum)
+        tx_date = _date.fromisoformat(tx_datum[:10])
+        score = matching.score_expense(expense, abs(float(tx.bedrag)), tx_date, tx.naam, tx.referentie)
+        if score < 0:
+            continue
+        scored.append(
+            schemas.BankTxMatchCandidate(
+                tx_id=tx.id,
+                naam=tx.naam,
+                datum=tx_date,
+                bedrag=tx.bedrag,
+                referentie=tx.referentie,
+                score=score,
+            )
+        )
+    scored.sort(key=lambda c: c.score, reverse=True)
+    return scored[:8]
 
 
 @router.post("", response_model=schemas.Expense)
@@ -50,7 +103,7 @@ def create_expense(payload: schemas.ExpenseCreate, db: Session = Depends(get_db)
 @router.post("/quick-capture", response_model=schemas.Expense)
 def quick_capture_expense(payload: schemas.ExpenseQuickCapture, db: Session = Depends(get_db)):
     """Fast-path expense creation, e.g. from a mobile OCR capture app."""
-    datum = payload.datum or date.today()
+    datum = payload.datum or _date.today()
     ex_btw, btw = _compute_btw(payload.total, payload.btw_pct)
     expense = models.Expense(
         factuur=payload.factuur,

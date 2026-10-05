@@ -1,5 +1,6 @@
 import { DeleteIncomeButton } from "@/components/delete-row-buttons";
 import { IncomeFormDialog } from "@/components/income-form-dialog";
+import { LinkedTransactionDialog } from "@/components/linked-transaction-dialog";
 import { QuarterSwitcher } from "@/components/quarter-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,13 +74,19 @@ export default async function IncomePage({
                   <TableCell className="text-right">{formatCurrency(i.ex_btw)}</TableCell>
                   <TableCell className="text-right">{formatCurrency(i.total)}</TableCell>
                   <TableCell>
-                    {i.betaald ? (
-                      <Badge variant="secondary" className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                        Betaald
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline">Open</Badge>
-                    )}
+                    <LinkedTransactionDialog
+                      kind="income"
+                      id={i.id}
+                      linked={i.linked_transaction}
+                      badge={
+                        i.betaald ? (
+                          <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
+                        ) : (
+                          <Badge variant="outline" className="cursor-pointer hover:bg-muted" />
+                        )
+                      }
+                      label={i.betaald ? "Voldaan" : "Open"}
+                    />
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">

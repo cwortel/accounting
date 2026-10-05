@@ -1,6 +1,7 @@
 import { DeleteExpenseButton } from "@/components/delete-row-buttons";
 import { ExpenseFilters } from "@/components/expense-filters";
 import { ExpenseFormDialog } from "@/components/expense-form-dialog";
+import { LinkedTransactionDialog } from "@/components/linked-transaction-dialog";
 import { QuarterSwitcher } from "@/components/quarter-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,8 +27,8 @@ export default async function ExpensesPage({
   let expenses = allExpenses;
   if (naamFilter) expenses = expenses.filter((e) => e.naam.toLowerCase().includes(naamFilter));
   if (categorieFilter !== "Alle") expenses = expenses.filter((e) => e.categorie === categorieFilter);
-  if (statusFilter === "Afgerekend") expenses = expenses.filter((e) => e.afgerekend);
-  if (statusFilter === "Niet afgerekend") expenses = expenses.filter((e) => !e.afgerekend);
+  if (statusFilter === "Voldaan") expenses = expenses.filter((e) => e.afgerekend);
+  if (statusFilter === "Open") expenses = expenses.filter((e) => !e.afgerekend);
 
   const totaal = expenses.reduce((sum, e) => sum + e.total, 0);
   const totaalExBtw = expenses.reduce((sum, e) => sum + e.ex_btw, 0);
@@ -86,13 +87,19 @@ export default async function ExpensesPage({
                   <TableCell className="text-right">{formatCurrency(e.ex_btw)}</TableCell>
                   <TableCell className="text-right">{formatCurrency(e.total)}</TableCell>
                   <TableCell>
-                    {e.afgerekend ? (
-                      <Badge variant="secondary" className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                        Afgerekend
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline">Open</Badge>
-                    )}
+                    <LinkedTransactionDialog
+                      kind="expense"
+                      id={e.id}
+                      linked={e.linked_transaction}
+                      badge={
+                        e.afgerekend ? (
+                          <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
+                        ) : (
+                          <Badge variant="outline" className="cursor-pointer hover:bg-muted" />
+                        )
+                      }
+                      label={e.afgerekend ? "Voldaan" : "Open"}
+                    />
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">

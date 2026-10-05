@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-const STATUS_OPTIONS = ["Alle", "Afgerekend", "Niet afgerekend"];
+const STATUS_OPTIONS = ["Alle", "Open", "Voldaan"];
 
 export function ExpenseFilters({
   categories,

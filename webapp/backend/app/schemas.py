@@ -3,6 +3,36 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict
 
 
+class BankTxSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    datum: date | None = None
+    bedrag: float = 0
+    naam: str = ""
+    referentie: str = ""
+
+
+class ExpenseSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    naam: str = ""
+    datum: date | None = None
+    total: float = 0
+    factuur: str = ""
+
+
+class IncomeSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    naam: str = ""
+    datum: date | None = None
+    total: float = 0
+    factuur: str = ""
+
+
 class ExpenseBase(BaseModel):
     factuur: str = ""
     naam: str = ""
@@ -30,6 +60,7 @@ class Expense(ExpenseBase):
     id: int
     btw: float = 0
     ex_btw: float = 0
+    linked_transaction: BankTxSummary | None = None
 
 
 class ExpenseQuickCapture(BaseModel):
@@ -70,6 +101,7 @@ class Income(IncomeBase):
     id: int
     btw: float = 0
     ex_btw: float = 0
+    linked_transaction: BankTxSummary | None = None
 
 
 class Category(BaseModel):
@@ -124,6 +156,8 @@ class BankTransaction(BaseModel):
     btw_betaling: bool = False
     btw_betaling_jaar: int | None = None
     btw_betaling_kwartaal: int | None = None
+    linked_expense: ExpenseSummary | None = None
+    linked_income: IncomeSummary | None = None
 
 
 class LinkBankTransaction(BaseModel):
@@ -167,6 +201,15 @@ class IncomeMatchCandidate(BaseModel):
     naam: str
     datum: date | None = None
     total: float
+    score: int
+
+
+class BankTxMatchCandidate(BaseModel):
+    tx_id: int
+    naam: str
+    datum: date | None = None
+    bedrag: float
+    referentie: str = ""
     score: int
 
 

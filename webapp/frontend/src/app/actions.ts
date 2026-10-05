@@ -133,11 +133,13 @@ export async function updateIncomeAction(
 export async function linkTransactionAction(txId: number, expenseId: number, fooi: number) {
   await api.bank.link(txId, { expense_id: expenseId, fooi });
   revalidatePath("/business/transactions");
+  revalidatePath("/business/expenses");
 }
 
 export async function linkIncomeTransactionAction(txId: number, incomeId: number) {
   await api.bank.link(txId, { income_id: incomeId });
   revalidatePath("/business/transactions");
+  revalidatePath("/business/income");
 }
 
 export async function getMatchCandidatesAction(txId: number) {
@@ -148,9 +150,19 @@ export async function getIncomeMatchCandidatesAction(txId: number) {
   return api.bank.incomeMatchCandidates(txId);
 }
 
+export async function getIncomeBankMatchCandidatesAction(incomeId: number) {
+  return api.income.bankMatchCandidates(incomeId);
+}
+
+export async function getExpenseBankMatchCandidatesAction(expenseId: number) {
+  return api.expenses.bankMatchCandidates(expenseId);
+}
+
 export async function unlinkTransactionAction(txId: number) {
   await api.bank.unlink(txId);
   revalidatePath("/business/transactions");
+  revalidatePath("/business/expenses");
+  revalidatePath("/business/income");
 }
 
 export async function markPriveAction(txId: number, omschrijving: string) {

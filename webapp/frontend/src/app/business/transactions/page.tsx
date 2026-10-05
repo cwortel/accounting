@@ -1,3 +1,4 @@
+import { LinkedReceiptDialog } from "@/components/linked-receipt-dialog";
 import { MatchTransactionDialog } from "@/components/match-transaction-dialog";
 import { TransactionFilters } from "@/components/transaction-filters";
 import { UnlinkTransactionButton } from "@/components/unlink-transaction-button";
@@ -10,11 +11,7 @@ import { formatCurrency, formatDate } from "@/lib/format";
 
 function StatusBadge({ tx }: { tx: BankTransaction }) {
   if (tx.expense_id || tx.income_id) {
-    return (
-      <Badge variant="secondary" className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-        🟢 Gekoppeld
-      </Badge>
-    );
+    return <LinkedReceiptDialog txId={tx.id} expense={tx.linked_expense} income={tx.linked_income} />;
   }
   if (tx.intern) return <Badge variant="secondary">🔄 Intern</Badge>;
   if (tx.prive) return <Badge variant="secondary">🟡 Privé</Badge>;
@@ -74,7 +71,8 @@ function TransactionTable({
           </TableRow>
         )}
         {transactions.map((tx) => {
-          const isLinked = Boolean(tx.expense_id || tx.income_id || tx.prive || tx.intern || tx.btw_betaling);
+          const isReceiptLinked = Boolean(tx.expense_id || tx.income_id);
+          const isOtherLinked = tx.prive || tx.intern || tx.btw_betaling;
           return (
             <TableRow key={tx.id}>
               <TableCell>{formatDate(tx.datum)}</TableCell>
@@ -86,7 +84,7 @@ function TransactionTable({
                 <StatusBadge tx={tx} />
               </TableCell>
               <TableCell className="text-right">
-                {isLinked ? (
+                {isReceiptLinked ? null : isOtherLinked ? (
                   <UnlinkTransactionButton txId={tx.id} />
                 ) : (
                   <MatchTransactionDialog txId={tx.id} jaar={jaar} bedrag={tx.bedrag} categories={categories} />

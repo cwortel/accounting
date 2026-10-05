@@ -4,7 +4,9 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
-import { createExpenseAction, updateExpenseAction } from "@/app/actions";
+import { createExpenseAction, getExpenseBankMatchCandidatesAction, linkTransactionAction, updateExpenseAction } from "@/app/actions";
+import { BankMatchCandidateList } from "@/components/bank-match-candidate-list";
+import { LinkedTransactionFormSection } from "@/components/linked-transaction-form-section";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,7 +19,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { Expense } from "@/lib/api";
+import type { BankTxMatchCandidate, Expense } from "@/lib/api";
 
 const PAYMENT_SOURCES = ["Onbekend", "Privé rekening", "Privé creditcard", "Contant", "Bank zakelijk"];
 
@@ -28,10 +30,22 @@ function deriveKwartaal(datum: string): number {
 
 export function ExpenseFormDialog({ categories, expense }: { categories: string[]; expense?: Expense }) {
   const [open, setOpen] = useState(false);
+  const [step, setStep] = useState<"form" | "link">("form");
+  const [linkExpenseId, setLinkExpenseId] = useState<number | null>(null);
+  const [candidates, setCandidates] = useState<BankTxMatchCandidate[] | null>(null);
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
   const today = new Date().toISOString().slice(0, 10);
   const isEdit = Boolean(expense);
+
+  function onOpenChange(next: boolean) {
+    setOpen(next);
+    if (!next) {
+      setStep("form");
+      setLinkExpenseId(null);
+      setCandidates(null);
+    }
+  }
 
   function onSubmit(formData: FormData) {
     const datum = String(formData.get("datum") || today);
@@ -61,24 +75,48 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
         if (expense) {
           await updateExpenseAction(expense.id, { ...payload, afgerekend: expense.afgerekend });
           toast.success("Uitgave bijgewerkt");
-        } else {
-          await createExpenseAction(payload);
-          toast.success("Uitgave toegevoegd");
+          setOpen(false);
+          router.refresh();
+          return;
         }
-        setOpen(false);
+        const saved = await createExpenseAction(payload);
+        toast.success("Uitgave toegevoegd");
         router.refresh();
+        if (saved.afgerekend) {
+          setOpen(false);
+          return;
+        }
+        setLinkExpenseId(saved.id);
+        setStep("link");
+        const found = await getExpenseBankMatchCandidatesAction(saved.id).catch(() => []);
+        setCandidates(found);
       } catch {
         toast.error("Opslaan mislukt. Probeer het opnieuw.");
       }
     });
   }
 
+  function linkTransaction(txId: number) {
+    if (!linkExpenseId) return;
+    startTransition(async () => {
+      try {
+        await linkTransactionAction(txId, linkExpenseId, 0);
+        toast.success("Banktransactie gekoppeld");
+        setOpen(false);
+        router.refresh();
+      } catch {
+        toast.error("Koppelen mislukt");
+      }
+    });
+  }
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger render={isEdit ? <Button size="sm" variant="ghost" /> : <Button />}>
         {isEdit ? "Bewerken" : "+ Nieuwe uitgave"}
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
+        {step === "form" ? (
         <form action={onSubmit}>
           <DialogHeader>
             <DialogTitle>{isEdit ? "Uitgave bewerken" : "Nieuwe uitgave"}</DialogTitle>
@@ -165,6 +203,9 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
                 </Select>
               </div>
             </div>
+            {isEdit && expense && (
+              <LinkedTransactionFormSection kind="expense" id={expense.id} linked={expense.linked_transaction} />
+            )}
           </div>
           <DialogFooter>
             <Button type="submit" disabled={isPending}>
@@ -172,6 +213,22 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
             </Button>
           </DialogFooter>
         </form>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Banktransactie koppelen</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Kies de bijbehorende banktransactie om deze uitgave meteen als voldaan te markeren.
+            </p>
+            <BankMatchCandidateList candidates={candidates} onLink={linkTransaction} isPending={isPending} />
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setOpen(false)} disabled={isPending}>
+                Overslaan
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );
