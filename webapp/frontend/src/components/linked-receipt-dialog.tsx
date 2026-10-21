@@ -39,6 +39,7 @@ export function LinkedReceiptDialog({
   return (
     <Dialog>
       <DialogTrigger
+        nativeButton={false}
         render={
           <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
         }

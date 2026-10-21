@@ -76,7 +76,9 @@ export function LinkedTransactionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger render={badge}>{label}</DialogTrigger>
+      <DialogTrigger nativeButton={false} render={badge}>
+        {label}
+      </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Gekoppelde banktransactie</DialogTitle>
