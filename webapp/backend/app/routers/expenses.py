@@ -1,4 +1,5 @@
 from datetime import date as _date
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import require_api_key
-from ..services import matching
+from ..services import expense_rules, matching
 
 router = APIRouter(prefix="/expenses", tags=["expenses"], dependencies=[Depends(require_api_key)])
 
@@ -40,10 +41,39 @@ def list_expenses(jaar: int, kwartaal: int | None = None, db: Session = Depends(
             )
         ).scalars()
     }
+    receipt_by_expense = {
+        r.expense_id: r
+        for r in db.execute(
+            select(models.Receipt).where(models.Receipt.expense_id.in_([e.id for e in expenses]))
+        ).scalars()
+    }
     for expense in expenses:
         tx = tx_by_expense.get(expense.id)
         expense.linked_transaction = schemas.BankTxSummary.model_validate(tx) if tx else None
+        receipt = receipt_by_expense.get(expense.id)
+        expense.linked_receipt = schemas.ReceiptSummary.model_validate(receipt) if receipt else None
     return expenses
+
+
+@router.get("/next-factuurnummer", response_model=schemas.NextFactuurnummer)
+def next_factuurnummer(jaar: int, kwartaal: int, db: Session = Depends(get_db)):
+    """Suggests the next internal filing number: {jaar}{kwartaal:02d}{sequence:03d}.
+
+    Scans existing factuur values for the same jaar/kwartaal matching that pattern
+    and returns one past the highest sequence found — purely a default suggestion,
+    the field stays freely editable so the user can override it.
+    """
+    prefix = f"{jaar}{kwartaal:02d}"
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d{{3,}})$")
+    max_seq = 0
+    rows = db.execute(
+        select(models.Expense.factuur).where(models.Expense.jaar == jaar, models.Expense.kwartaal == kwartaal)
+    ).scalars()
+    for factuur in rows:
+        m = pattern.match(factuur or "")
+        if m:
+            max_seq = max(max_seq, int(m.group(1)))
+    return schemas.NextFactuurnummer(factuurnummer=f"{prefix}{max_seq + 1:03d}")
 
 
 @router.get("/{expense_id}/bank-match-candidates", response_model=list[schemas.BankTxMatchCandidate])
@@ -88,11 +118,13 @@ def expense_bank_match_candidates(expense_id: int, db: Session = Depends(get_db)
 @router.post("", response_model=schemas.Expense)
 def create_expense(payload: schemas.ExpenseCreate, db: Session = Depends(get_db)):
     ex_btw, btw = _compute_btw(payload.total, payload.btw_pct)
+    afgerekend = payload.afgerekend or expense_rules.auto_voldaan(payload.betaal_bron)
     expense = models.Expense(
-        **payload.model_dump(exclude={"datum"}),
+        **payload.model_dump(exclude={"datum", "afgerekend"}),
         datum=payload.datum.isoformat() if payload.datum else "",
         ex_btw=ex_btw,
         btw=btw,
+        afgerekend=afgerekend,
     )
     db.add(expense)
     db.commit()
@@ -133,6 +165,14 @@ def update_expense(expense_id: int, payload: schemas.ExpenseUpdate, db: Session 
     ex_btw, btw = _compute_btw(payload.total, payload.btw_pct)
     for field, value in payload.model_dump(exclude={"datum"}).items():
         setattr(expense, field, value)
+    if expense_rules.auto_voldaan(expense.betaal_bron):
+        expense.afgerekend = True
+    elif expense.betaal_bron == "Bank zakelijk":
+        has_tx = db.execute(
+            select(models.BankTransaction.id).where(models.BankTransaction.expense_id == expense_id)
+        ).first()
+        if not has_tx:
+            expense.afgerekend = False
     expense.datum = payload.datum.isoformat() if payload.datum else ""
     expense.ex_btw = ex_btw
     expense.btw = btw

@@ -158,6 +158,19 @@ export async function getExpenseBankMatchCandidatesAction(expenseId: number) {
   return api.expenses.bankMatchCandidates(expenseId);
 }
 
+export async function getUnmatchedBankTransactionsAction(jaar: number) {
+  return api.bank.list(jaar, { onlyUnmatched: true });
+}
+
+export async function getExpensesForYearAction(jaar: number) {
+  return api.expenses.list(jaar);
+}
+
+export async function getNextFactuurnummerAction(jaar: number, kwartaal: number) {
+  const result = await api.expenses.nextFactuurnummer(jaar, kwartaal);
+  return result.factuurnummer;
+}
+
 export async function unlinkTransactionAction(txId: number) {
   await api.bank.unlink(txId);
   revalidatePath("/business/transactions");
@@ -208,6 +221,34 @@ export async function importScanFolderAction() {
   revalidatePath("/business/transactions");
   revalidatePath("/business/accounts");
   return results;
+}
+
+export async function scanReceiptsAction() {
+  const result = await api.receipts.scan();
+  revalidatePath("/business/expenses");
+  return result;
+}
+
+export async function approveReceiptAction(
+  id: number,
+  data: { naam: string; datum: string; categorie: string; btw_pct: number; total: number; factuur?: string; betaal_bron?: string }
+) {
+  const expense = await api.receipts.approve(id, data);
+  revalidatePath("/");
+  revalidatePath("/business/expenses");
+  return expense;
+}
+
+export async function rejectReceiptAction(id: number) {
+  await api.receipts.reject(id);
+  revalidatePath("/business/expenses");
+}
+
+export async function getReceiptBankMatchCandidatesAction(
+  id: number,
+  params: { naam?: string; total?: number; datum?: string }
+) {
+  return api.receipts.bankMatchCandidates(id, params);
 }
 
 export async function createDebtAction(data: {

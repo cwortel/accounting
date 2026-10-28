@@ -4,7 +4,13 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
-import { createExpenseAction, getExpenseBankMatchCandidatesAction, linkTransactionAction, updateExpenseAction } from "@/app/actions";
+import {
+  createExpenseAction,
+  getExpenseBankMatchCandidatesAction,
+  getNextFactuurnummerAction,
+  linkTransactionAction,
+  updateExpenseAction,
+} from "@/app/actions";
 import { BankMatchCandidateList } from "@/components/bank-match-candidate-list";
 import { LinkedTransactionFormSection } from "@/components/linked-transaction-form-section";
 import { Button } from "@/components/ui/button";
@@ -37,10 +43,29 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
   const router = useRouter();
   const today = new Date().toISOString().slice(0, 10);
   const isEdit = Boolean(expense);
+  const [factuurValue, setFactuurValue] = useState(expense?.factuur ?? "");
+  const [factuurTouched, setFactuurTouched] = useState(false);
+
+  function onDatumChange(e: React.ChangeEvent<HTMLInputElement>) {
+    if (isEdit || factuurTouched || !e.target.value) return;
+    const datum = e.target.value;
+    getNextFactuurnummerAction(Number(datum.slice(0, 4)), deriveKwartaal(datum))
+      .then(setFactuurValue)
+      .catch(() => {});
+  }
 
   function onOpenChange(next: boolean) {
     setOpen(next);
-    if (!next) {
+    if (next) {
+      setFactuurTouched(false);
+      if (isEdit) {
+        setFactuurValue(expense?.factuur ?? "");
+      } else {
+        getNextFactuurnummerAction(Number(today.slice(0, 4)), deriveKwartaal(today))
+          .then(setFactuurValue)
+          .catch(() => {});
+      }
+    } else {
       setStep("form");
       setLinkExpenseId(null);
       setCandidates(null);
@@ -164,7 +189,14 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-1.5">
                 <Label htmlFor="datum">Datum</Label>
-                <Input id="datum" name="datum" type="date" defaultValue={expense?.datum ?? today} required />
+                <Input
+                  id="datum"
+                  name="datum"
+                  type="date"
+                  defaultValue={expense?.datum ?? today}
+                  onChange={onDatumChange}
+                  required
+                />
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="categorie">Categorie</Label>
@@ -185,7 +217,16 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-1.5">
                 <Label htmlFor="factuur">Factuurnummer</Label>
-                <Input id="factuur" name="factuur" placeholder="optioneel" defaultValue={expense?.factuur} />
+                <Input
+                  id="factuur"
+                  name="factuur"
+                  placeholder="optioneel"
+                  value={factuurValue}
+                  onChange={(e) => {
+                    setFactuurValue(e.target.value);
+                    setFactuurTouched(true);
+                  }}
+                />
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="betaal_bron">Betaald via</Label>
@@ -204,7 +245,7 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
               </div>
             </div>
             {isEdit && expense && (
-              <LinkedTransactionFormSection kind="expense" id={expense.id} linked={expense.linked_transaction} />
+              <LinkedTransactionFormSection kind="expense" id={expense.id} jaar={expense.jaar} linked={expense.linked_transaction} />
             )}
           </div>
           <DialogFooter>

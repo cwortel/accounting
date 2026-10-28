@@ -118,3 +118,25 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(String, default="")
+
+
+class Receipt(Base):
+    __tablename__ = "receipts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Path relative to Settings.receipts_dir, e.g. "2026-Q1/bonnetje.pdf".
+    file_path: Mapped[str] = mapped_column(String, nullable=False)
+    file_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String, default="")
+    mime_type: Mapped[str] = mapped_column(String, default="")
+    jaar: Mapped[int] = mapped_column(Integer, nullable=False)
+    kwartaal: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending | approved | rejected
+    extracted_naam: Mapped[str] = mapped_column(String, default="")
+    extracted_datum: Mapped[str] = mapped_column(String, default="")
+    extracted_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    extracted_btw_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ocr_text: Mapped[str] = mapped_column(String, default="")
+    expense_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default="")
+    processed_at: Mapped[str | None] = mapped_column(String, nullable=True)

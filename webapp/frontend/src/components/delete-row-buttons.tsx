@@ -5,14 +5,54 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { deleteAccountAction, deleteDebtAction, deleteExpenseAction, deleteIncomeAction } from "@/app/actions";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+
+function ConfirmDeleteButton({
+  description,
+  isPending,
+  onConfirm,
+}: {
+  description: string;
+  isPending: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger render={<Button variant="ghost" size="sm" disabled={isPending} />}>
+        Verwijderen
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Weet je het zeker?</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Annuleren</AlertDialogCancel>
+          <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={onConfirm}>
+            Verwijderen
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 export function DeleteExpenseButton({ id }: { id: number }) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
-  function onClick() {
-    if (!confirm("Deze uitgave verwijderen?")) return;
+  function onConfirm() {
     startTransition(async () => {
       try {
         await deleteExpenseAction(id);
@@ -24,19 +64,14 @@ export function DeleteExpenseButton({ id }: { id: number }) {
     });
   }
 
-  return (
-    <Button variant="ghost" size="sm" onClick={onClick} disabled={isPending}>
-      Verwijderen
-    </Button>
-  );
+  return <ConfirmDeleteButton description="Deze uitgave verwijderen?" isPending={isPending} onConfirm={onConfirm} />;
 }
 
 export function DeleteIncomeButton({ id }: { id: number }) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
-  function onClick() {
-    if (!confirm("Deze inkomst verwijderen?")) return;
+  function onConfirm() {
     startTransition(async () => {
       try {
         await deleteIncomeAction(id);
@@ -48,19 +83,14 @@ export function DeleteIncomeButton({ id }: { id: number }) {
     });
   }
 
-  return (
-    <Button variant="ghost" size="sm" onClick={onClick} disabled={isPending}>
-      Verwijderen
-    </Button>
-  );
+  return <ConfirmDeleteButton description="Deze inkomst verwijderen?" isPending={isPending} onConfirm={onConfirm} />;
 }
 
 export function DeleteDebtButton({ id }: { id: number }) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
-  function onClick() {
-    if (!confirm("Deze schuld verwijderen?")) return;
+  function onConfirm() {
     startTransition(async () => {
       try {
         await deleteDebtAction(id);
@@ -72,19 +102,14 @@ export function DeleteDebtButton({ id }: { id: number }) {
     });
   }
 
-  return (
-    <Button variant="ghost" size="sm" onClick={onClick} disabled={isPending}>
-      Verwijderen
-    </Button>
-  );
+  return <ConfirmDeleteButton description="Deze schuld verwijderen?" isPending={isPending} onConfirm={onConfirm} />;
 }
 
 export function DeleteAccountButton({ id }: { id: number }) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
-  function onClick() {
-    if (!confirm("Deze rekening verwijderen?")) return;
+  function onConfirm() {
     startTransition(async () => {
       try {
         await deleteAccountAction(id);
@@ -96,9 +121,5 @@ export function DeleteAccountButton({ id }: { id: number }) {
     });
   }
 
-  return (
-    <Button variant="ghost" size="sm" onClick={onClick} disabled={isPending}>
-      Verwijderen
-    </Button>
-  );
+  return <ConfirmDeleteButton description="Deze rekening verwijderen?" isPending={isPending} onConfirm={onConfirm} />;
 }

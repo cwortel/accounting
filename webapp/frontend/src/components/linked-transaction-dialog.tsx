@@ -20,12 +20,14 @@ import type { BankTxMatchCandidate, BankTxSummary } from "@/lib/api";
 export function LinkedTransactionDialog({
   kind,
   id,
+  jaar,
   linked,
   badge,
   label,
 }: {
   kind: "expense" | "income";
   id: number;
+  jaar: number;
   linked: BankTxSummary | null;
   badge: React.ReactElement;
   label: string;
@@ -95,7 +97,7 @@ export function LinkedTransactionDialog({
         ) : (
           <>
             <p className="text-sm text-muted-foreground">Nog geen banktransactie gekoppeld.</p>
-            <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} />
+            <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} jaar={jaar} />
           </>
         )}
       </DialogContent>

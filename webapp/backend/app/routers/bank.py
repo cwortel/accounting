@@ -149,6 +149,7 @@ def link_bank_transaction(tx_id: int, payload: schemas.LinkBankTransaction, db: 
 def unlink_bank_transaction(tx_id: int, db: Session = Depends(get_db)):
     tx = _get_tx(db, tx_id)
     previous_income_id = tx.income_id
+    previous_expense_id = tx.expense_id
     tx.expense_id = None
     tx.income_id = None
     tx.fooi = 0
@@ -161,6 +162,10 @@ def unlink_bank_transaction(tx_id: int, db: Session = Depends(get_db)):
     tx.btw_betaling_kwartaal = None
     db.flush()
     _sync_income_betaald(db, previous_income_id)
+    if previous_expense_id:
+        expense = db.get(models.Expense, previous_expense_id)
+        if expense and expense.betaal_bron == "Bank zakelijk":
+            expense.afgerekend = False
     db.commit()
     db.refresh(tx)
     return tx

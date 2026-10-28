@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import {
   createExpenseFromTxAction,
+  getExpensesForYearAction,
   getIncomeMatchCandidatesAction,
   getMatchCandidatesAction,
   linkIncomeTransactionAction,
@@ -26,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { IncomeMatchCandidate, MatchCandidate } from "@/lib/api";
+import type { Expense, IncomeMatchCandidate, MatchCandidate } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/format";
 
 type MatchType = "Uitgave" | "Inkomst" | "Privé onttrekking" | "Interne overboeking" | "BTW betaling";
@@ -51,6 +52,23 @@ export function MatchTransactionDialog({
   const [showCreateExpense, setShowCreateExpense] = useState(false);
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
+  const [expSearchOpen, setExpSearchOpen] = useState(false);
+  const [expQuery, setExpQuery] = useState("");
+  const [allExpenses, setAllExpenses] = useState<Expense[] | null>(null);
+
+  function openExpenseSearch() {
+    setExpSearchOpen(true);
+    if (allExpenses === null) {
+      getExpensesForYearAction(jaar)
+        .then(setAllExpenses)
+        .catch(() => setAllExpenses([]));
+    }
+  }
+
+  const filteredExpenses =
+    allExpenses === null
+      ? null
+      : allExpenses.filter((e) => !e.afgerekend && e.naam.toLowerCase().includes(expQuery.toLowerCase()));
 
   function onOpenChange(next: boolean) {
     setOpen(next);
@@ -198,6 +216,42 @@ export function MatchTransactionDialog({
                 </button>
               ))}
             </div>
+            {expSearchOpen ? (
+              <div className="flex flex-col gap-1 border-t pt-3">
+                <Label htmlFor="exp_search">Niet in de lijst? Zoek handmatig</Label>
+                <Input
+                  id="exp_search"
+                  placeholder="Zoek op naam…"
+                  value={expQuery}
+                  onChange={(e) => setExpQuery(e.target.value)}
+                  autoFocus
+                />
+                <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+                  {filteredExpenses === null && <p className="text-sm text-muted-foreground py-2">Laden…</p>}
+                  {filteredExpenses?.length === 0 && (
+                    <p className="text-sm text-muted-foreground py-2">Geen open uitgaven gevonden.</p>
+                  )}
+                  {filteredExpenses?.map((e) => (
+                    <button
+                      key={e.id}
+                      onClick={() => linkExpense(e.id, Math.max(Math.abs(bedrag) - e.total, 0))}
+                      disabled={isPending}
+                      className="flex items-center justify-between rounded-md border px-3 py-2 text-sm text-left hover:bg-muted disabled:opacity-50"
+                    >
+                      <span>
+                        <span className="font-medium">{e.naam}</span>{" "}
+                        <span className="text-muted-foreground">· {formatDate(e.datum)}</span>
+                      </span>
+                      <span className="font-medium">{formatCurrency(e.total)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <Button variant="link" size="sm" className="self-start px-0" onClick={openExpenseSearch}>
+                Niet in de lijst? Zoek handmatig
+              </Button>
+            )}
             {!showCreateExpense ? (
               <Button variant="link" size="sm" className="self-start px-0" onClick={() => setShowCreateExpense(true)}>
                 Geen bon? Nieuwe uitgave aanmaken vanuit deze transactie

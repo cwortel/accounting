@@ -19,6 +19,10 @@ local dev since both sides get the same placeholder, but replace it with a
 real random value in `backend/.env` (and match it in `frontend/.env.local`)
 before this app leaves your machine.
 
+Receipt OCR needs the Tesseract binary installed system-wide (not a pip
+package): `brew install tesseract tesseract-lang` on macOS. See
+[backend/README.md](backend/README.md#receipt-ocr).
+
 <details>
 <summary>Run manually instead</summary>
 
@@ -75,12 +79,16 @@ npm run dev
   category/recurring editing (applies to all transactions with the same naam,
   matching legacy behavior). No pagination — not needed at current data volume.
 - Schulden: list + create/edit/delete.
+- Bonnetjes (receipts): "Bonnetjes controleren" tab on the Uitgaven page —
+  scans `data/Receipts/<jaar>-Q<kwartaal>/` for new PDF/image receipts, runs
+  local OCR (Tesseract) with heuristic field extraction (naam, datum,
+  totaal, BTW%), then lets you cycle through pending receipts one at a time
+  (preview + editable pre-filled form) to approve (creates the linked
+  Uitgave) or reject. See [backend/README.md](backend/README.md#receipt-ocr).
 
 Note: `vaste_lasten` and `prive_inkomsten` are confirmed-removed legacy
 concepts (not just unused — intentionally dropped) and have been deleted
 from the new backend entirely (models, schemas, migration script).
-
-Not yet ported: receipt attachments.
 
 ## Data migration
 

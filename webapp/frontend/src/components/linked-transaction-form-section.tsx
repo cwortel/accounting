@@ -20,10 +20,12 @@ import type { BankTxMatchCandidate, BankTxSummary } from "@/lib/api";
 export function LinkedTransactionFormSection({
   kind,
   id,
+  jaar,
   linked,
 }: {
   kind: "expense" | "income";
   id: number;
+  jaar: number;
   linked: BankTxSummary | null;
 }) {
   const [showCandidates, setShowCandidates] = useState(false);
@@ -80,7 +82,7 @@ export function LinkedTransactionFormSection({
           </Button>
         </>
       ) : showCandidates ? (
-        <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} />
+        <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} jaar={jaar} />
       ) : (
         <Button type="button" variant="link" size="sm" className="self-start px-0" onClick={loadCandidates}>
           Banktransactie koppelen

@@ -1,6 +1,6 @@
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class BankTxSummary(BaseModel):
@@ -33,6 +33,14 @@ class IncomeSummary(BaseModel):
     factuur: str = ""
 
 
+class ReceiptSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    original_filename: str = ""
+    status: str = "pending"
+
+
 class ExpenseBase(BaseModel):
     factuur: str = ""
     naam: str = ""
@@ -61,6 +69,7 @@ class Expense(ExpenseBase):
     btw: float = 0
     ex_btw: float = 0
     linked_transaction: BankTxSummary | None = None
+    linked_receipt: ReceiptSummary | None = None
 
 
 class ExpenseQuickCapture(BaseModel):
@@ -73,6 +82,10 @@ class ExpenseQuickCapture(BaseModel):
     categorie: str = ""
     factuur: str = ""
     betaal_bron: str = ""
+
+
+class NextFactuurnummer(BaseModel):
+    factuurnummer: str
 
 
 class IncomeBase(BaseModel):
@@ -198,6 +211,44 @@ class MatchCandidate(BaseModel):
 
 class IncomeMatchCandidate(BaseModel):
     income_id: int
+
+
+class Receipt(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    original_filename: str = ""
+    mime_type: str = ""
+    jaar: int
+    kwartaal: int
+    status: str = "pending"
+    extracted_naam: str = ""
+    extracted_datum: date | None = None
+    extracted_total: float | None = None
+    extracted_btw_pct: int | None = None
+    ocr_text: str = ""
+    expense_id: int | None = None
+    created_at: str = ""
+
+    @field_validator("extracted_datum", mode="before")
+    @classmethod
+    def _empty_string_to_none(cls, v):
+        return v or None
+
+
+class ReceiptApprove(BaseModel):
+    naam: str = ""
+    datum: date | None = None
+    categorie: str = ""
+    btw_pct: int = 0
+    total: float
+    factuur: str = ""
+    betaal_bron: str = ""
+
+
+class ReceiptScanResult(BaseModel):
+    gevonden: int
+    nieuw: int
     naam: str
     datum: date | None = None
     total: float

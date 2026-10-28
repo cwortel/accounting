@@ -14,6 +14,14 @@ pip install -r requirements.txt
 cp .env.example .env   # set ACCOUNTING_API_TOKEN to a real random value
 ```
 
+Receipt OCR also needs the Tesseract binary + Dutch language pack installed
+system-wide (used via `pytesseract`; `pymupdf`/Pillow are pure Python and
+already covered by `pip install`):
+
+```bash
+brew install tesseract tesseract-lang   # macOS
+```
+
 ## Run
 
 ```bash
@@ -38,3 +46,17 @@ python -m scripts.migrate_from_old_db
 This copies every row from `data/boekhouding.db` into the new database,
 table by table. Safe to re-run — it replaces existing rows in the new DB
 each time.
+
+## Receipt OCR
+
+Scanned/photographed receipts (PDF or image) placed in `data/Receipts/`
+(repo root, configurable via `Settings.receipts_dir`), organized in quarter
+subfolders like `2026-Q1/`, are picked up by `POST /receipts/scan`: it walks
+the folder recursively, OCRs any new file (by content hash — re-running is
+always safe), and stores a pending `Receipt` row with best-effort extracted
+fields (naam, datum, totaal, BTW%). Files are never moved or modified.
+
+Review/approve each pending receipt via `GET /receipts?status=pending`,
+`POST /receipts/{id}/approve` (creates the linked `Expense`) or
+`POST /receipts/{id}/reject`. The frontend exposes this as the "Bonnetjes
+controleren" tab on the Uitgaven page.

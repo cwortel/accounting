@@ -77,6 +77,7 @@ export default async function IncomePage({
                     <LinkedTransactionDialog
                       kind="income"
                       id={i.id}
+                      jaar={i.jaar}
                       linked={i.linked_transaction}
                       badge={
                         i.betaald ? (

@@ -3,9 +3,11 @@ import { ExpenseFilters } from "@/components/expense-filters";
 import { ExpenseFormDialog } from "@/components/expense-form-dialog";
 import { LinkedTransactionDialog } from "@/components/linked-transaction-dialog";
 import { QuarterSwitcher } from "@/components/quarter-switcher";
+import { ReceiptReviewPanel } from "@/components/receipt-review-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YearSwitcher } from "@/components/year-switcher";
 import { api } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/format";
@@ -23,6 +25,7 @@ export default async function ExpensesPage({
   const statusFilter = params.status || "Alle";
 
   const [allExpenses, categories] = await Promise.all([api.expenses.list(jaar, kwartaal), api.categories.list()]);
+  const pendingReceipts = await api.receipts.list("pending");
 
   let expenses = allExpenses;
   if (naamFilter) expenses = expenses.filter((e) => e.naam.toLowerCase().includes(naamFilter));
@@ -52,81 +55,108 @@ export default async function ExpensesPage({
 
       <ExpenseFilters categories={categories} naam={params.naam || ""} categorie={categorieFilter} status={statusFilter} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Alle uitgaven {jaar}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Datum</TableHead>
-                <TableHead>Naam</TableHead>
-                <TableHead>Categorie</TableHead>
-                <TableHead className="text-right">BTW%</TableHead>
-                <TableHead className="text-right">Ex BTW</TableHead>
-                <TableHead className="text-right">Totaal</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {expenses.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
-                    Geen uitgaven gevonden. Klik op &ldquo;+ Nieuwe uitgave&rdquo; om te beginnen.
-                  </TableCell>
-                </TableRow>
-              )}
-              {expenses.map((e) => (
-                <TableRow key={e.id}>
-                  <TableCell>{formatDate(e.datum)}</TableCell>
-                  <TableCell className="font-medium">{e.naam}</TableCell>
-                  <TableCell>{e.categorie}</TableCell>
-                  <TableCell className="text-right">{e.btw_pct}%</TableCell>
-                  <TableCell className="text-right">{formatCurrency(e.ex_btw)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(e.total)}</TableCell>
-                  <TableCell>
-                    <LinkedTransactionDialog
-                      kind="expense"
-                      id={e.id}
-                      linked={e.linked_transaction}
-                      badge={
-                        e.afgerekend ? (
-                          <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
-                        ) : (
-                          <Badge variant="outline" className="cursor-pointer hover:bg-muted" />
-                        )
-                      }
-                      label={e.afgerekend ? "Voldaan" : "Open"}
-                    />
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <ExpenseFormDialog categories={categories} expense={e} />
-                      <DeleteExpenseButton id={e.id} />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-            {expenses.length > 0 && (
-              <TableFooter>
-                <TableRow>
-                  <TableCell colSpan={4} className="font-medium">
-                    Totaal
-                  </TableCell>
-                  <TableCell className="text-right font-medium">{formatCurrency(totaalExBtw)}</TableCell>
-                  <TableCell className="text-right font-medium">{formatCurrency(totaal)}</TableCell>
-                  <TableCell colSpan={2} className="text-xs text-muted-foreground">
-                    BTW: {formatCurrency(totaalBtw)}
-                  </TableCell>
-                </TableRow>
-              </TableFooter>
-            )}
-          </Table>
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="uitgaven">
+        <TabsList>
+          <TabsTrigger value="uitgaven">Uitgaven</TabsTrigger>
+          <TabsTrigger value="bonnetjes">
+            Bonnetjes controleren{pendingReceipts.length > 0 ? ` (${pendingReceipts.length})` : ""}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="uitgaven">
+          <Card>
+            <CardHeader>
+              <CardTitle>Alle uitgaven {jaar}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Datum</TableHead>
+                    <TableHead>Naam</TableHead>
+                    <TableHead>Categorie</TableHead>
+                    <TableHead className="text-right">BTW%</TableHead>
+                    <TableHead className="text-right">Ex BTW</TableHead>
+                    <TableHead className="text-right">Totaal</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {expenses.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                        Geen uitgaven gevonden. Klik op &ldquo;+ Nieuwe uitgave&rdquo; om te beginnen.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {expenses.map((e) => (
+                    <TableRow key={e.id}>
+                      <TableCell>{formatDate(e.datum)}</TableCell>
+                      <TableCell className="font-medium">
+                        {e.naam}
+                        {e.linked_receipt && (
+                          <a
+                            href={`/api/receipts/${e.linked_receipt.id}/file`}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Bon bekijken"
+                            className="ml-1.5 text-muted-foreground hover:text-foreground"
+                          >
+                            📎
+                          </a>
+                        )}
+                      </TableCell>
+                      <TableCell>{e.categorie}</TableCell>
+                      <TableCell className="text-right">{e.btw_pct}%</TableCell>
+                      <TableCell className="text-right">{formatCurrency(e.ex_btw)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(e.total)}</TableCell>
+                      <TableCell>
+                        <LinkedTransactionDialog
+                          kind="expense"
+                          id={e.id}
+                          jaar={e.jaar}
+                          linked={e.linked_transaction}
+                          badge={
+                            e.afgerekend ? (
+                              <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
+                            ) : (
+                              <Badge variant="outline" className="cursor-pointer hover:bg-muted" />
+                            )
+                          }
+                          label={e.afgerekend ? "Voldaan" : "Open"}
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <ExpenseFormDialog categories={categories} expense={e} />
+                          <DeleteExpenseButton id={e.id} />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+                {expenses.length > 0 && (
+                  <TableFooter>
+                    <TableRow>
+                      <TableCell colSpan={4} className="font-medium">
+                        Totaal
+                      </TableCell>
+                      <TableCell className="text-right font-medium">{formatCurrency(totaalExBtw)}</TableCell>
+                      <TableCell className="text-right font-medium">{formatCurrency(totaal)}</TableCell>
+                      <TableCell colSpan={2} className="text-xs text-muted-foreground">
+                        BTW: {formatCurrency(totaalBtw)}
+                      </TableCell>
+                    </TableRow>
+                  </TableFooter>
+                )}
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="bonnetjes">
+          <ReceiptReviewPanel receipts={pendingReceipts} categories={categories} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

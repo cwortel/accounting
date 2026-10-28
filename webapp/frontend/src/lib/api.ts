@@ -43,6 +43,34 @@ export type Expense = {
   jaar: number;
   kwartaal: number;
   linked_transaction: BankTxSummary | null;
+  linked_receipt: ReceiptSummary | null;
+};
+
+export type ReceiptSummary = {
+  id: number;
+  original_filename: string;
+  status: string;
+};
+
+export type Receipt = {
+  id: number;
+  original_filename: string;
+  mime_type: string;
+  jaar: number;
+  kwartaal: number;
+  status: string;
+  extracted_naam: string;
+  extracted_datum: string | null;
+  extracted_total: number | null;
+  extracted_btw_pct: number | null;
+  ocr_text: string;
+  expense_id: number | null;
+  created_at: string;
+};
+
+export type ReceiptScanResult = {
+  gevonden: number;
+  nieuw: number;
 };
 
 export type Income = {
@@ -210,6 +238,8 @@ export const api = {
     remove: (id: number) => request<void>(`/expenses/${id}`, { method: "DELETE" }),
     bankMatchCandidates: (expenseId: number) =>
       request<BankTxMatchCandidate[]>(`/expenses/${expenseId}/bank-match-candidates`),
+    nextFactuurnummer: (jaar: number, kwartaal: number) =>
+      request<{ factuurnummer: string }>(`/expenses/next-factuurnummer?jaar=${jaar}&kwartaal=${kwartaal}`),
   },
   income: {
     list: (jaar: number, kwartaal?: number) =>
@@ -224,6 +254,22 @@ export const api = {
   },
   categories: {
     list: () => request<string[]>("/categories"),
+  },
+  receipts: {
+    list: (status: string = "pending") => request<Receipt[]>(`/receipts?status=${status}`),
+    scan: () => request<ReceiptScanResult>("/receipts/scan", { method: "POST" }),
+    bankMatchCandidates: (id: number, params: { naam?: string; total?: number; datum?: string }) => {
+      const search = new URLSearchParams();
+      if (params.naam) search.set("naam", params.naam);
+      if (params.total !== undefined) search.set("total", String(params.total));
+      if (params.datum) search.set("datum", params.datum);
+      return request<BankTxMatchCandidate[]>(`/receipts/${id}/bank-match-candidates?${search}`);
+    },
+    approve: (
+      id: number,
+      data: { naam: string; datum: string; categorie: string; btw_pct: number; total: number; factuur?: string; betaal_bron?: string }
+    ) => request<Expense>(`/receipts/${id}/approve`, { method: "POST", body: JSON.stringify(data) }),
+    reject: (id: number) => request<Receipt>(`/receipts/${id}/reject`, { method: "POST" }),
   },
   accounts: {
     list: () => request<Rekening[]>("/accounts"),
