@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { YearSwitcher } from "@/components/year-switcher";
 import { api } from "@/lib/api";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDate, netLinkedAmount } from "@/lib/format";
 
 export default async function IncomePage({
   searchParams,
@@ -78,7 +78,8 @@ export default async function IncomePage({
                       kind="income"
                       id={i.id}
                       jaar={i.jaar}
-                      linked={i.linked_transaction}
+                      total={i.total}
+                      linked={i.linked_transactions}
                       badge={
                         i.betaald ? (
                           <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
@@ -88,6 +89,13 @@ export default async function IncomePage({
                       }
                       label={i.betaald ? "Voldaan" : "Open"}
                     />
+                    {i.linked_transactions.length > 0 &&
+                      (() => {
+                        const verschil = i.total - netLinkedAmount("income", i.linked_transactions);
+                        return Math.abs(verschil) > 0.005 ? (
+                          <span className="ml-1.5 text-xs text-amber-600">Δ {formatCurrency(verschil)}</span>
+                        ) : null;
+                      })()}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">

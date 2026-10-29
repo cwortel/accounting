@@ -1,5 +1,6 @@
 from datetime import date as _date
 import re
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -33,14 +34,11 @@ def list_expenses(jaar: int, kwartaal: int | None = None, db: Session = Depends(
     stmt = stmt.order_by(models.Expense.datum, models.Expense.factuur)
     expenses = db.execute(stmt).scalars().all()
 
-    tx_by_expense = {
-        tx.expense_id: tx
-        for tx in db.execute(
-            select(models.BankTransaction).where(
-                models.BankTransaction.expense_id.in_([e.id for e in expenses])
-            )
-        ).scalars()
-    }
+    tx_by_expense: dict[int, list[models.BankTransaction]] = defaultdict(list)
+    for tx in db.execute(
+        select(models.BankTransaction).where(models.BankTransaction.expense_id.in_([e.id for e in expenses]))
+    ).scalars():
+        tx_by_expense[tx.expense_id].append(tx)
     receipt_by_expense = {
         r.expense_id: r
         for r in db.execute(
@@ -48,8 +46,9 @@ def list_expenses(jaar: int, kwartaal: int | None = None, db: Session = Depends(
         ).scalars()
     }
     for expense in expenses:
-        tx = tx_by_expense.get(expense.id)
-        expense.linked_transaction = schemas.BankTxSummary.model_validate(tx) if tx else None
+        expense.linked_transactions = [
+            schemas.BankTxSummary.model_validate(tx) for tx in tx_by_expense.get(expense.id, [])
+        ]
         receipt = receipt_by_expense.get(expense.id)
         expense.linked_receipt = schemas.ReceiptSummary.model_validate(receipt) if receipt else None
     return expenses

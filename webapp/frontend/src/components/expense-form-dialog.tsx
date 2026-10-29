@@ -245,7 +245,13 @@ export function ExpenseFormDialog({ categories, expense }: { categories: string[
               </div>
             </div>
             {isEdit && expense && (
-              <LinkedTransactionFormSection kind="expense" id={expense.id} jaar={expense.jaar} linked={expense.linked_transaction} />
+              <LinkedTransactionFormSection
+                kind="expense"
+                id={expense.id}
+                jaar={expense.jaar}
+                total={expense.total}
+                linked={expense.linked_transactions}
+              />
             )}
           </div>
           <DialogFooter>

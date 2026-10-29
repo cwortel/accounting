@@ -11,7 +11,13 @@ import { formatCurrency, formatDate } from "@/lib/format";
 
 function StatusBadge({ tx }: { tx: BankTransaction }) {
   if (tx.expense_id || tx.income_id) {
-    return <LinkedReceiptDialog txId={tx.id} expense={tx.linked_expense} income={tx.linked_income} />;
+    const verschil = tx.linked_expense?.verschil ?? tx.linked_income?.verschil ?? 0;
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <LinkedReceiptDialog txId={tx.id} expense={tx.linked_expense} income={tx.linked_income} />
+        {Math.abs(verschil) > 0.005 && <span className="text-xs text-amber-600">Δ {formatCurrency(verschil)}</span>}
+      </span>
+    );
   }
   if (tx.intern) return <Badge variant="secondary">🔄 Intern</Badge>;
   if (tx.prive) return <Badge variant="secondary">🟡 Privé</Badge>;

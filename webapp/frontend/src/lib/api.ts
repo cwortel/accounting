@@ -42,7 +42,7 @@ export type Expense = {
   betaal_bron: string;
   jaar: number;
   kwartaal: number;
-  linked_transaction: BankTxSummary | null;
+  linked_transactions: BankTxSummary[];
   linked_receipt: ReceiptSummary | null;
 };
 
@@ -86,7 +86,7 @@ export type Income = {
   betaald: boolean;
   jaar: number;
   kwartaal: number;
-  linked_transaction: BankTxSummary | null;
+  linked_transactions: BankTxSummary[];
 };
 
 export type BankTxSummary = {
@@ -103,6 +103,7 @@ export type ExpenseSummary = {
   datum: string | null;
   total: number;
   factuur: string;
+  verschil: number;
 };
 
 export type IncomeSummary = {
@@ -111,6 +112,7 @@ export type IncomeSummary = {
   datum: string | null;
   total: number;
   factuur: string;
+  verschil: number;
 };
 
 export type BankTransaction = {

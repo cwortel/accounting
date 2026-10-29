@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { XIcon } from "lucide-react";
 
 import {
   getExpenseBankMatchCandidatesAction,
@@ -14,13 +15,15 @@ import {
 import { BankMatchCandidateList } from "@/components/bank-match-candidate-list";
 import { LinkedSummaryCard } from "@/components/linked-summary-card";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import type { BankTxMatchCandidate, BankTxSummary } from "@/lib/api";
+import { formatCurrency, netLinkedAmount } from "@/lib/format";
 
 export function LinkedTransactionDialog({
   kind,
   id,
   jaar,
+  total,
   linked,
   badge,
   label,
@@ -28,7 +31,8 @@ export function LinkedTransactionDialog({
   kind: "expense" | "income";
   id: number;
   jaar: number;
-  linked: BankTxSummary | null;
+  total: number;
+  linked: BankTxSummary[];
   badge: React.ReactElement;
   label: string;
 }) {
@@ -39,7 +43,7 @@ export function LinkedTransactionDialog({
 
   function onOpenChange(next: boolean) {
     setOpen(next);
-    if (next && !linked && candidates === null) {
+    if (next && candidates === null) {
       const fetcher = kind === "expense" ? getExpenseBankMatchCandidatesAction : getIncomeBankMatchCandidatesAction;
       startTransition(async () => setCandidates(await fetcher(id).catch(() => [])));
     }
@@ -54,7 +58,6 @@ export function LinkedTransactionDialog({
           await linkIncomeTransactionAction(txId, id);
         }
         toast.success("Banktransactie gekoppeld");
-        setOpen(false);
         router.refresh();
       } catch {
         toast.error("Koppelen mislukt");
@@ -62,19 +65,19 @@ export function LinkedTransactionDialog({
     });
   }
 
-  function unlink() {
-    if (!linked) return;
+  function unlink(txId: number) {
     startTransition(async () => {
       try {
-        await unlinkTransactionAction(linked.id);
+        await unlinkTransactionAction(txId);
         toast.success("Ontkoppeld");
-        setOpen(false);
         router.refresh();
       } catch {
         toast.error("Ontkoppelen mislukt");
       }
     });
   }
+
+  const gekoppeld = netLinkedAmount(kind, linked);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -83,23 +86,33 @@ export function LinkedTransactionDialog({
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Gekoppelde banktransactie</DialogTitle>
+          <DialogTitle>Gekoppelde banktransactie{linked.length === 1 ? "" : "s"}</DialogTitle>
         </DialogHeader>
-        {linked ? (
-          <>
-            <LinkedSummaryCard naam={linked.naam} datum={linked.datum} amount={linked.bedrag} extra={linked.referentie || undefined} />
-            <DialogFooter>
-              <Button variant="destructive" size="sm" onClick={unlink} disabled={isPending}>
-                Ontkoppelen
-              </Button>
-            </DialogFooter>
-          </>
-        ) : (
-          <>
-            <p className="text-sm text-muted-foreground">Nog geen banktransactie gekoppeld.</p>
-            <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} jaar={jaar} />
-          </>
+        {linked.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {linked.map((tx) => (
+              <div key={tx.id} className="flex items-center gap-2">
+                <div className="flex-1">
+                  <LinkedSummaryCard naam={tx.naam} datum={tx.datum} amount={tx.bedrag} extra={tx.referentie || undefined} />
+                </div>
+                <Button variant="ghost" size="icon-sm" onClick={() => unlink(tx.id)} disabled={isPending}>
+                  <XIcon />
+                </Button>
+              </div>
+            ))}
+            {linked.length > 1 && (
+              <p className="text-right text-xs text-muted-foreground">
+                Gekoppeld: {formatCurrency(gekoppeld)} van {formatCurrency(total)}
+              </p>
+            )}
+          </div>
         )}
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            {linked.length === 0 ? "Nog geen banktransactie gekoppeld." : "Nog een transactie koppelen:"}
+          </p>
+          <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} jaar={jaar} />
+        </div>
       </DialogContent>
     </Dialog>
   );

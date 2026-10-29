@@ -21,6 +21,7 @@ class ExpenseSummary(BaseModel):
     datum: date | None = None
     total: float = 0
     factuur: str = ""
+    verschil: float = 0
 
 
 class IncomeSummary(BaseModel):
@@ -31,6 +32,7 @@ class IncomeSummary(BaseModel):
     datum: date | None = None
     total: float = 0
     factuur: str = ""
+    verschil: float = 0
 
 
 class ReceiptSummary(BaseModel):
@@ -68,7 +70,7 @@ class Expense(ExpenseBase):
     id: int
     btw: float = 0
     ex_btw: float = 0
-    linked_transaction: BankTxSummary | None = None
+    linked_transactions: list[BankTxSummary] = []
     linked_receipt: ReceiptSummary | None = None
 
 
@@ -114,7 +116,7 @@ class Income(IncomeBase):
     id: int
     btw: float = 0
     ex_btw: float = 0
-    linked_transaction: BankTxSummary | None = None
+    linked_transactions: list[BankTxSummary] = []
 
 
 class Category(BaseModel):

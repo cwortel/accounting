@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { XIcon } from "lucide-react";
 
 import {
   getExpenseBankMatchCandidatesAction,
@@ -16,17 +17,20 @@ import { LinkedSummaryCard } from "@/components/linked-summary-card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import type { BankTxMatchCandidate, BankTxSummary } from "@/lib/api";
+import { formatCurrency, netLinkedAmount } from "@/lib/format";
 
 export function LinkedTransactionFormSection({
   kind,
   id,
   jaar,
+  total,
   linked,
 }: {
   kind: "expense" | "income";
   id: number;
   jaar: number;
-  linked: BankTxSummary | null;
+  total: number;
+  linked: BankTxSummary[];
 }) {
   const [showCandidates, setShowCandidates] = useState(false);
   const [candidates, setCandidates] = useState<BankTxMatchCandidate[] | null>(null);
@@ -58,11 +62,10 @@ export function LinkedTransactionFormSection({
     });
   }
 
-  function unlink() {
-    if (!linked) return;
+  function unlink(txId: number) {
     startTransition(async () => {
       try {
-        await unlinkTransactionAction(linked.id);
+        await unlinkTransactionAction(txId);
         toast.success("Ontkoppeld");
         router.refresh();
       } catch {
@@ -71,21 +74,31 @@ export function LinkedTransactionFormSection({
     });
   }
 
+  const gekoppeld = netLinkedAmount(kind, linked);
+
   return (
     <div className="grid gap-2 rounded-md border p-3">
-      <Label>Gekoppelde banktransactie</Label>
-      {linked ? (
-        <>
-          <LinkedSummaryCard naam={linked.naam} datum={linked.datum} amount={linked.bedrag} extra={linked.referentie || undefined} />
-          <Button type="button" variant="ghost" size="sm" className="self-start" onClick={unlink} disabled={isPending}>
-            Ontkoppelen
+      <Label>Gekoppelde banktransactie{linked.length === 1 ? "" : "s"}</Label>
+      {linked.map((tx) => (
+        <div key={tx.id} className="flex items-center gap-2">
+          <div className="flex-1">
+            <LinkedSummaryCard naam={tx.naam} datum={tx.datum} amount={tx.bedrag} extra={tx.referentie || undefined} />
+          </div>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => unlink(tx.id)} disabled={isPending}>
+            <XIcon />
           </Button>
-        </>
-      ) : showCandidates ? (
+        </div>
+      ))}
+      {linked.length > 1 && (
+        <p className="text-right text-xs text-muted-foreground">
+          Gekoppeld: {formatCurrency(gekoppeld)} van {formatCurrency(total)}
+        </p>
+      )}
+      {showCandidates ? (
         <BankMatchCandidateList candidates={candidates} onLink={linkTx} isPending={isPending} jaar={jaar} />
       ) : (
         <Button type="button" variant="link" size="sm" className="self-start px-0" onClick={loadCandidates}>
-          Banktransactie koppelen
+          {linked.length === 0 ? "Banktransactie koppelen" : "Nog een transactie koppelen"}
         </Button>
       )}
     </div>

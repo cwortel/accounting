@@ -1,4 +1,5 @@
 from datetime import date as _date
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -26,17 +27,15 @@ def list_income(jaar: int, kwartaal: int | None = None, db: Session = Depends(ge
     stmt = stmt.order_by(models.Income.datum, models.Income.factuur)
     income_rows = db.execute(stmt).scalars().all()
 
-    tx_by_income = {
-        tx.income_id: tx
-        for tx in db.execute(
-            select(models.BankTransaction).where(
-                models.BankTransaction.income_id.in_([i.id for i in income_rows])
-            )
-        ).scalars()
-    }
+    tx_by_income: dict[int, list[models.BankTransaction]] = defaultdict(list)
+    for tx in db.execute(
+        select(models.BankTransaction).where(models.BankTransaction.income_id.in_([i.id for i in income_rows]))
+    ).scalars():
+        tx_by_income[tx.income_id].append(tx)
     for income in income_rows:
-        tx = tx_by_income.get(income.id)
-        income.linked_transaction = schemas.BankTxSummary.model_validate(tx) if tx else None
+        income.linked_transactions = [
+            schemas.BankTxSummary.model_validate(tx) for tx in tx_by_income.get(income.id, [])
+        ]
     return income_rows
 
 

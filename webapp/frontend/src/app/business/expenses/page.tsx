@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YearSwitcher } from "@/components/year-switcher";
 import { api } from "@/lib/api";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDate, netLinkedAmount } from "@/lib/format";
 
 export default async function ExpensesPage({
   searchParams,
@@ -117,7 +117,8 @@ export default async function ExpensesPage({
                           kind="expense"
                           id={e.id}
                           jaar={e.jaar}
-                          linked={e.linked_transaction}
+                          total={e.total}
+                          linked={e.linked_transactions}
                           badge={
                             e.afgerekend ? (
                               <Badge variant="secondary" className="cursor-pointer bg-emerald-100 text-emerald-700 hover:bg-emerald-100" />
@@ -127,6 +128,13 @@ export default async function ExpensesPage({
                           }
                           label={e.afgerekend ? "Voldaan" : "Open"}
                         />
+                        {e.linked_transactions.length > 0 &&
+                          (() => {
+                            const verschil = e.total - netLinkedAmount("expense", e.linked_transactions);
+                            return Math.abs(verschil) > 0.005 ? (
+                              <span className="ml-1.5 text-xs text-amber-600">Δ {formatCurrency(verschil)}</span>
+                            ) : null;
+                          })()}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">

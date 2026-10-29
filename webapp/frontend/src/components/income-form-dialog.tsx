@@ -166,7 +166,13 @@ export function IncomeFormDialog({ income }: { income?: Income }) {
                 <Input id="factuur" name="factuur" placeholder="optioneel" defaultValue={income?.factuur} />
               </div>
               {isEdit && income && (
-                <LinkedTransactionFormSection kind="income" id={income.id} jaar={income.jaar} linked={income.linked_transaction} />
+                <LinkedTransactionFormSection
+                  kind="income"
+                  id={income.id}
+                  jaar={income.jaar}
+                  total={income.total}
+                  linked={income.linked_transactions}
+                />
               )}
             </div>
             <DialogFooter>

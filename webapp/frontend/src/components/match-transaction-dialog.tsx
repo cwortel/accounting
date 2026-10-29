@@ -68,7 +68,9 @@ export function MatchTransactionDialog({
   const filteredExpenses =
     allExpenses === null
       ? null
-      : allExpenses.filter((e) => !e.afgerekend && e.naam.toLowerCase().includes(expQuery.toLowerCase()));
+      : // Not filtered by afgerekend: an expense can have more than one linked
+        // transaction (e.g. a car rental deposit + a separate adjustment charge).
+        allExpenses.filter((e) => e.naam.toLowerCase().includes(expQuery.toLowerCase()));
 
   function onOpenChange(next: boolean) {
     setOpen(next);

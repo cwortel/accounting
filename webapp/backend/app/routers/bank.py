@@ -1,9 +1,10 @@
 import shutil
 import tempfile
+from datetime import date as _date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -47,11 +48,54 @@ def list_bank_transactions(
     income_ids = [t.income_id for t in transactions if t.income_id is not None]
     expenses_by_id = {e.id: e for e in db.execute(select(models.Expense).where(models.Expense.id.in_(expense_ids))).scalars()}
     income_by_id = {i.id: i for i in db.execute(select(models.Income).where(models.Income.id.in_(income_ids))).scalars()}
+
+    # Net linked amount per expense/income across ALL their linked transactions (not
+    # just the ones in this filtered result set), so the diff shown is always correct
+    # even when an expense's other transaction falls outside the current filter.
+    expense_net: dict[int, float] = {
+        exp_id: -float(total_bedrag or 0)
+        for exp_id, total_bedrag in db.execute(
+            select(models.BankTransaction.expense_id, func.sum(models.BankTransaction.bedrag))
+            .where(models.BankTransaction.expense_id.in_(expense_ids))
+            .group_by(models.BankTransaction.expense_id)
+        )
+    }
+    income_net: dict[int, float] = {
+        inc_id: float(total_bedrag or 0)
+        for inc_id, total_bedrag in db.execute(
+            select(models.BankTransaction.income_id, func.sum(models.BankTransaction.bedrag))
+            .where(models.BankTransaction.income_id.in_(income_ids))
+            .group_by(models.BankTransaction.income_id)
+        )
+    }
+
     for tx in transactions:
         expense = expenses_by_id.get(tx.expense_id) if tx.expense_id is not None else None
         income = income_by_id.get(tx.income_id) if tx.income_id is not None else None
-        tx.linked_expense = schemas.ExpenseSummary.model_validate(expense) if expense else None
-        tx.linked_income = schemas.IncomeSummary.model_validate(income) if income else None
+        tx.linked_expense = (
+            schemas.ExpenseSummary(
+                id=expense.id,
+                naam=expense.naam,
+                datum=_date.fromisoformat(expense.datum[:10]) if expense.datum else None,
+                total=expense.total,
+                factuur=expense.factuur,
+                verschil=round(expense.total - expense_net.get(expense.id, 0), 2),
+            )
+            if expense
+            else None
+        )
+        tx.linked_income = (
+            schemas.IncomeSummary(
+                id=income.id,
+                naam=income.naam,
+                datum=_date.fromisoformat(income.datum[:10]) if income.datum else None,
+                total=income.total,
+                factuur=income.factuur,
+                verschil=round(income.total - income_net.get(income.id, 0), 2),
+            )
+            if income
+            else None
+        )
     return transactions
 
 
@@ -165,7 +209,13 @@ def unlink_bank_transaction(tx_id: int, db: Session = Depends(get_db)):
     if previous_expense_id:
         expense = db.get(models.Expense, previous_expense_id)
         if expense and expense.betaal_bron == "Bank zakelijk":
-            expense.afgerekend = False
+            # Only clear afgerekend if no other transaction is still linked to this
+            # expense (an expense can have several, e.g. a deposit + an adjustment).
+            still_linked = db.execute(
+                select(models.BankTransaction.id).where(models.BankTransaction.expense_id == previous_expense_id)
+            ).first()
+            if not still_linked:
+                expense.afgerekend = False
     db.commit()
     db.refresh(tx)
     return tx
