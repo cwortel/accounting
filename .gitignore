@@ -3,6 +3,7 @@ data/*.db
 data/*.bak
 data/BankTransactions/
 data/Private information/
+data/Receipts/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

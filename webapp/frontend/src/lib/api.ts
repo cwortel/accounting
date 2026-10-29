@@ -270,6 +270,7 @@ export const api = {
       data: { naam: string; datum: string; categorie: string; btw_pct: number; total: number; factuur?: string; betaal_bron?: string }
     ) => request<Expense>(`/receipts/${id}/approve`, { method: "POST", body: JSON.stringify(data) }),
     reject: (id: number) => request<Receipt>(`/receipts/${id}/reject`, { method: "POST" }),
+    reprocess: (id: number) => request<Receipt>(`/receipts/${id}/reprocess`, { method: "POST" }),
   },
   accounts: {
     list: () => request<Rekening[]>("/accounts"),

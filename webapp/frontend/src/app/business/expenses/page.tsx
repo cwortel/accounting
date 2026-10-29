@@ -4,6 +4,7 @@ import { ExpenseFormDialog } from "@/components/expense-form-dialog";
 import { LinkedTransactionDialog } from "@/components/linked-transaction-dialog";
 import { QuarterSwitcher } from "@/components/quarter-switcher";
 import { ReceiptReviewPanel } from "@/components/receipt-review-panel";
+import { ReceiptsOverviewPanel } from "@/components/receipts-overview-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -61,6 +62,7 @@ export default async function ExpensesPage({
           <TabsTrigger value="bonnetjes">
             Bonnetjes controleren{pendingReceipts.length > 0 ? ` (${pendingReceipts.length})` : ""}
           </TabsTrigger>
+          <TabsTrigger value="alle-bonnetjes">Alle bonnetjes</TabsTrigger>
         </TabsList>
         <TabsContent value="uitgaven">
           <Card>
@@ -155,6 +157,9 @@ export default async function ExpensesPage({
         </TabsContent>
         <TabsContent value="bonnetjes">
           <ReceiptReviewPanel receipts={pendingReceipts} categories={categories} />
+        </TabsContent>
+        <TabsContent value="alle-bonnetjes">
+          <ReceiptsOverviewPanel />
         </TabsContent>
       </Tabs>
     </div>

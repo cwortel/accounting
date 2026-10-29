@@ -1,6 +1,7 @@
 import hashlib
 import re
 from datetime import date as _date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -11,7 +12,7 @@ from .. import models, schemas
 from ..config import get_settings
 from ..database import get_db
 from ..deps import require_api_key
-from ..services import expense_rules, matching, receipt_ocr
+from ..services import expense_rules, matching, receipt_ocr, ubl_invoice
 
 router = APIRouter(prefix="/receipts", tags=["receipts"], dependencies=[Depends(require_api_key)])
 
@@ -40,12 +41,26 @@ def _get_receipt(db: Session, receipt_id: int) -> models.Receipt:
     return receipt
 
 
+def _extract_fields(primary: Path, suffix: str) -> tuple[dict, str, str]:
+    """Returns (fields, raw_text, mime_type) — UBL XML sidecar data when present, else OCR."""
+    xml_path = primary if suffix == ".xml" else primary.with_suffix(".xml")
+    ubl_fields = ubl_invoice.parse_ubl_invoice(xml_path) if xml_path.exists() else None
+    if ubl_fields is not None:
+        text = xml_path.read_text(encoding="utf-8", errors="replace")
+        mime_type = "application/xml" if suffix == ".xml" else receipt_ocr.MIME_TYPES.get(suffix, "application/octet-stream")
+        return ubl_fields, text, mime_type
+    text, mime_type = receipt_ocr.extract_text(primary)
+    return receipt_ocr.parse_fields(text), text, mime_type
+
+
 @router.post("/scan", response_model=schemas.ReceiptScanResult)
 def scan_receipts(db: Session = Depends(get_db)):
-    """Walk Settings.receipts_dir recursively, OCR any new file, and store it as a pending Receipt.
+    """Walk Settings.receipts_dir recursively and store any new file as a pending Receipt.
 
-    Files are never moved or modified — dedup is by content hash, so re-running
-    this after dropping a new file into a quarter folder is always safe.
+    If a file has a same-named .xml sidecar (a UBL e-invoice, as produced by some
+    receipt-scanning apps), its exact structured data is used instead of OCR. Files
+    are never moved or modified — dedup is by content hash, so re-running this after
+    dropping a new file into a quarter folder is always safe.
     """
     folder = get_settings().receipts_dir
     folder.mkdir(parents=True, exist_ok=True)
@@ -56,16 +71,24 @@ def scan_receipts(db: Session = Depends(get_db)):
     gevonden = 0
     nieuw = 0
     for path in sorted(folder.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in RECEIPT_SUFFIXES:
+        if not path.is_file():
             continue
+        suffix = path.suffix.lower()
+        if suffix in RECEIPT_SUFFIXES:
+            primary = path
+        elif suffix == ".xml" and not any(path.with_suffix(ext).exists() for ext in RECEIPT_SUFFIXES):
+            # An XML sidecar with no matching PDF/image is itself the only source we have.
+            primary = path
+        else:
+            continue
+
         gevonden += 1
-        file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        file_hash = hashlib.sha256(primary.read_bytes()).hexdigest()
         if file_hash in existing_hashes:
             continue
 
-        relative = path.relative_to(folder)
-        text, mime_type = receipt_ocr.extract_text(path)
-        fields = receipt_ocr.parse_fields(text)
+        relative = primary.relative_to(folder)
+        fields, text, mime_type = _extract_fields(primary, suffix)
 
         datum = fields.get("datum")
         jaar_kwartaal = _derive_jaar_kwartaal_from_path(relative.parts[:-1])
@@ -80,7 +103,7 @@ def scan_receipts(db: Session = Depends(get_db)):
             models.Receipt(
                 file_path=str(relative),
                 file_hash=file_hash,
-                original_filename=path.name,
+                original_filename=primary.name,
                 mime_type=mime_type,
                 jaar=jaar,
                 kwartaal=kwartaal,
@@ -107,6 +130,37 @@ def list_receipts(status: str = "pending", db: Session = Depends(get_db)):
         stmt = stmt.where(models.Receipt.status == status)
     stmt = stmt.order_by(models.Receipt.created_at, models.Receipt.id)
     return db.execute(stmt).scalars().all()
+
+
+@router.post("/{receipt_id}/reprocess", response_model=schemas.Receipt)
+def reprocess_receipt(receipt_id: int, db: Session = Depends(get_db)):
+    """Resets a rejected receipt back to pending and re-runs extraction with the
+    current logic (e.g. after a receipt was rejected by mistake, or to pick up
+    extraction fixes made since it was first scanned).
+
+    Refused for already-approved receipts: those are already linked to a real
+    Expense, and resetting them to pending risks the user approving a duplicate.
+    """
+    receipt = _get_receipt(db, receipt_id)
+    if receipt.status == "approved":
+        raise HTTPException(status_code=400, detail="Deze bon is al goedgekeurd en gekoppeld aan een uitgave.")
+
+    path = get_settings().receipts_dir / receipt.file_path
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Receipt file missing on disk")
+
+    fields, text, _mime = _extract_fields(path, path.suffix.lower())
+    datum = fields.get("datum")
+    receipt.status = "pending"
+    receipt.processed_at = None
+    receipt.extracted_naam = fields.get("naam") or ""
+    receipt.extracted_datum = datum.isoformat() if datum else ""
+    receipt.extracted_total = fields.get("total")
+    receipt.extracted_btw_pct = fields.get("btw_pct")
+    receipt.ocr_text = text
+    db.commit()
+    db.refresh(receipt)
+    return receipt
 
 
 @router.get("/{receipt_id}/file")

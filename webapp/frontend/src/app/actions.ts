@@ -244,6 +244,16 @@ export async function rejectReceiptAction(id: number) {
   revalidatePath("/business/expenses");
 }
 
+export async function getAllReceiptsAction(status: string) {
+  return api.receipts.list(status);
+}
+
+export async function reprocessReceiptAction(id: number) {
+  const receipt = await api.receipts.reprocess(id);
+  revalidatePath("/business/expenses");
+  return receipt;
+}
+
 export async function getReceiptBankMatchCandidatesAction(
   id: number,
   params: { naam?: string; total?: number; datum?: string }

@@ -249,10 +249,6 @@ class ReceiptApprove(BaseModel):
 class ReceiptScanResult(BaseModel):
     gevonden: int
     nieuw: int
-    naam: str
-    datum: date | None = None
-    total: float
-    score: int
 
 
 class BankTxMatchCandidate(BaseModel):
